@@ -233,6 +233,39 @@ async function checkRugCheckSafety(address) {
       if (dangerousAuthority) {
         return { safe: false, reason: 'RugCheck: mint/freeze authority masih aktif', clusterWarning };
       }
+
+      // ==================== LIQUIDITY LOCK/BURN CHECK ====================
+      // Cek apakah LP token di-lock atau di-burn (indikator keamanan likuiditas).
+      // LP aman jika: top holder LP < 10% (tersebar/burned) ATAU mintAuthority LP = null.
+      const markets = json?.markets || [];
+      if (markets.length > 0) {
+        const mainMarket = markets[0]; // pair dengan likuiditas terbesar
+        const lpHolders = mainMarket?.lp?.holders || [];
+        const mintLPAccount = mainMarket?.mintLPAccount;
+
+        // Cek 1: Apakah LP mintAuthority masih aktif (bisa mint LP sewaktu-waktu = bahaya)
+        const lpMintAuthorityActive = mintLPAccount?.mintAuthority != null;
+
+        // Cek 2: Apakah LP terkonsentrasi di satu wallet (>10% = creator bisa rug)
+        const topLPHolderPct = lpHolders.length > 0 ? (lpHolders[0]?.pct || 0) : 0;
+        const lpConcentrated = topLPHolderPct > 10;
+
+        if (lpMintAuthorityActive && lpConcentrated) {
+          return { 
+            safe: false, 
+            reason: `RugCheck: LP tidak aman (mint authority aktif + ${topLPHolderPct.toFixed(1)}% LP dipegang 1 wallet)`, 
+            clusterWarning 
+          };
+        }
+        if (lpConcentrated) {
+          return { 
+            safe: false, 
+            reason: `RugCheck: LP terkonsentrasi (${topLPHolderPct.toFixed(1)}% dipegang 1 wallet, belum di-lock/burn)`, 
+            clusterWarning 
+          };
+        }
+      }
+
       return { safe: true, reason: null, clusterWarning };
     } catch (err) {
       return { safe: true, reason: `RugCheck error (dilewati): ${err.message}`, clusterWarning: false };
