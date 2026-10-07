@@ -153,12 +153,13 @@ function computeMomentum(recentPrices) {
 }
 
 // ==================== TELEGRAM ====================
-async function sendTelegramAlert({ symbol, name, address, price, volume1h, marketCap, liquidityUsd, pairUrl, dexId, momentum, tierLabel, clusterWarning, bundleWarning, bundlePercentage, lpWarning, lpWarningReason }) {
+async function sendTelegramAlert({ symbol, name, address, price, volume1h, marketCap, liquidityUsd, pairUrl, dexId, momentum, tierLabel, clusterWarning, bundleWarning, bundlePercentage, bundleDataMissing, lpWarning, lpWarningReason }) {
   const mcText = marketCap != null ? `$${Number(marketCap).toLocaleString('en-US')}` : 'Data tidak tersedia';
   const risky = liquidityUsd == null || liquidityUsd < LIQUIDITY_MIN_USD;
   const riskLine = risky ? `\n⚠️ RISIKO LIKUIDITAS TINGGI` : '';
   const clusterLine = clusterWarning ? `\n⚠️ Hati-hati: terdeteksi cluster wallet (mirip pola diagram gelembung mencurigakan)` : '';
   const bundleLine = bundleWarning ? `\n⚠️ Hati-hati: Bundle buys tinggi (${bundlePercentage.toFixed(1)}%)` : '';
+  const bundleMissingLine = bundleDataMissing ? `\n⚠️ Data Bundle buys tidak tersedia (Solana Tracker API gagal)` : '';
   
   // Warning khusus untuk PumpSwap dan LP tidak aman
   const dexLower = (dexId || '').toLowerCase();
@@ -181,6 +182,7 @@ async function sendTelegramAlert({ symbol, name, address, price, volume1h, marke
     riskLine +
     clusterLine +
     bundleLine +
+    bundleMissingLine +
     pumpSwapLine +
     lpLine +
     momentumLine + `\n` +
@@ -302,28 +304,47 @@ async function getHolderCount(address) {
 }
 
 // ==================== SOLANA TRACKER: persentase bundle buys ====================
-async function getBundlePercentage(address) {
+async function getBundlePercentage(address, retryCount = 0) {
   if (!SOLANATRACKER_API_KEY) {
     console.log(`Bundle check dilewati (${address}): SOLANATRACKER_API_KEY belum diisi.`);
     return null;
   }
+  
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 2000;
+  
   try {
     const url = `https://data.solanatracker.io/tokens/${address}`;
     const res = await fetch(url, { headers: { 'x-api-key': SOLANATRACKER_API_KEY } });
+    
     if (!res.ok) {
-      console.log(`Bundle check gagal (${address}): HTTP ${res.status}.`);
+      // Retry untuk HTTP error (429 rate limit, 5xx server error, dll)
+      if (retryCount < MAX_RETRIES && (res.status === 429 || res.status >= 500)) {
+        console.log(`Bundle check gagal (${address}): HTTP ${res.status}, retry ${retryCount + 1}/${MAX_RETRIES} dalam ${RETRY_DELAY_MS}ms...`);
+        await sleep(RETRY_DELAY_MS * (retryCount + 1)); // exponential backoff
+        return getBundlePercentage(address, retryCount + 1);
+      }
+      console.log(`Bundle check gagal (${address}): HTTP ${res.status}, tidak ada retry lagi.`);
       return null;
     }
+    
     const json = await res.json();
     const pct = json?.risk?.bundlers?.totalPercentage ?? null;
+    
     if (pct == null) {
       console.log(`Bundle check (${address}): field bundlers.totalPercentage tidak ditemukan di respons Solana Tracker.`);
     } else {
-      console.log(`Bundle check (${address}): ${pct}%.`);
+      console.log(`Bundle check (${address}): ${pct}%${retryCount > 0 ? ` (berhasil setelah ${retryCount} retry)` : ''}.`);
     }
     return pct;
   } catch (err) {
-    console.log(`Bundle check error (${address}): ${err.message}`);
+    // Retry untuk network error
+    if (retryCount < MAX_RETRIES) {
+      console.log(`Bundle check error (${address}): ${err.message}, retry ${retryCount + 1}/${MAX_RETRIES} dalam ${RETRY_DELAY_MS}ms...`);
+      await sleep(RETRY_DELAY_MS * (retryCount + 1));
+      return getBundlePercentage(address, retryCount + 1);
+    }
+    console.log(`Bundle check error (${address}): ${err.message}, tidak ada retry lagi.`);
     return null;
   }
 }
@@ -518,6 +539,9 @@ async function checkQualityGates(snapshot) {
   }
   const bundlePercentage = state.prices[address].bundlePercentage;
   const bundleWarning = bundlePercentage != null && bundlePercentage > BUNDLE_WARNING_PCT;
+  
+  // Warning jika bundle data tidak tersedia (API gagal setelah retry)
+  const bundleDataMissing = bundlePercentage === undefined;
 
   return {
     pass: true,
@@ -525,7 +549,7 @@ async function checkQualityGates(snapshot) {
       address, symbol, name, price: snapshot.price, volume1h, marketCap, liquidityUsd, pairUrl: p.url,
       dexId: p.dexId,
       clusterWarning: state.prices[address].clusterWarning || false,
-      bundleWarning, bundlePercentage,
+      bundleWarning, bundlePercentage, bundleDataMissing,
       lpWarning: state.prices[address].lpWarning || false,
       lpWarningReason: state.prices[address].lpWarningReason || null,
     },
