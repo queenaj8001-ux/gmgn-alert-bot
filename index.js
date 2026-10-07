@@ -153,12 +153,18 @@ function computeMomentum(recentPrices) {
 }
 
 // ==================== TELEGRAM ====================
-async function sendTelegramAlert({ symbol, name, address, price, volume1h, marketCap, liquidityUsd, pairUrl, momentum, tierLabel, clusterWarning, bundleWarning, bundlePercentage }) {
+async function sendTelegramAlert({ symbol, name, address, price, volume1h, marketCap, liquidityUsd, pairUrl, dexId, momentum, tierLabel, clusterWarning, bundleWarning, bundlePercentage, lpWarning, lpWarningReason }) {
   const mcText = marketCap != null ? `$${Number(marketCap).toLocaleString('en-US')}` : 'Data tidak tersedia';
   const risky = liquidityUsd == null || liquidityUsd < LIQUIDITY_MIN_USD;
   const riskLine = risky ? `\n⚠️ RISIKO LIKUIDITAS TINGGI` : '';
   const clusterLine = clusterWarning ? `\n⚠️ Hati-hati: terdeteksi cluster wallet (mirip pola diagram gelembung mencurigakan)` : '';
   const bundleLine = bundleWarning ? `\n⚠️ Hati-hati: Bundle buys tinggi (${bundlePercentage.toFixed(1)}%)` : '';
+  
+  // Warning khusus untuk PumpSwap dan LP tidak aman
+  const dexLower = (dexId || '').toLowerCase();
+  const isPumpSwap = dexLower.includes('pumpswap') || dexLower.includes('pump_swap');
+  const pumpSwapLine = isPumpSwap ? `\n⚠️ Token PumpSwap: baru graduate dari bonding curve, perlu extra validasi` : '';
+  const lpLine = lpWarning ? `\n⚠️ LP Warning: ${lpWarningReason}` : '';
 
   const momentumLine = momentum && momentum.pct != null
     ? `\nMomentum: ${momentum.label} (${momentum.pct.toFixed(1)}% dalam ${momentum.seconds}d terakhir)`
@@ -175,6 +181,8 @@ async function sendTelegramAlert({ symbol, name, address, price, volume1h, marke
     riskLine +
     clusterLine +
     bundleLine +
+    pumpSwapLine +
+    lpLine +
     momentumLine + `\n` +
     (pairUrl ? `Chart: ${pairUrl}` : '');
 
@@ -238,6 +246,9 @@ async function checkRugCheckSafety(address) {
       // Cek apakah LP token di-lock atau di-burn (indikator keamanan likuiditas).
       // LP aman jika: top holder LP < 10% (tersebar/burned) ATAU mintAuthority LP = null.
       const markets = json?.markets || [];
+      let lpWarning = false;
+      let lpWarningReason = null;
+
       if (markets.length > 0) {
         const mainMarket = markets[0]; // pair dengan likuiditas terbesar
         const lpHolders = mainMarket?.lp?.holders || [];
@@ -250,23 +261,23 @@ async function checkRugCheckSafety(address) {
         const topLPHolderPct = lpHolders.length > 0 ? (lpHolders[0]?.pct || 0) : 0;
         const lpConcentrated = topLPHolderPct > 10;
 
-        if (lpMintAuthorityActive && lpConcentrated) {
-          return { 
-            safe: false, 
-            reason: `RugCheck: LP tidak aman (mint authority aktif + ${topLPHolderPct.toFixed(1)}% LP dipegang 1 wallet)`, 
-            clusterWarning 
-          };
+        // Opsi C: jika LP data tidak lengkap atau berisiko, beri WARNING (tidak blokir sinyal)
+        if (lpHolders.length === 0) {
+          lpWarning = true;
+          lpWarningReason = 'Data LP tidak tersedia dari RugCheck';
+        } else if (lpMintAuthorityActive && lpConcentrated) {
+          lpWarning = true;
+          lpWarningReason = `LP mint authority aktif + ${topLPHolderPct.toFixed(1)}% LP dipegang 1 wallet`;
+        } else if (lpConcentrated) {
+          lpWarning = true;
+          lpWarningReason = `${topLPHolderPct.toFixed(1)}% LP dipegang 1 wallet (belum di-lock/burn)`;
         }
-        if (lpConcentrated) {
-          return { 
-            safe: false, 
-            reason: `RugCheck: LP terkonsentrasi (${topLPHolderPct.toFixed(1)}% dipegang 1 wallet, belum di-lock/burn)`, 
-            clusterWarning 
-          };
-        }
+      } else {
+        lpWarning = true;
+        lpWarningReason = 'Tidak ada data market dari RugCheck';
       }
 
-      return { safe: true, reason: null, clusterWarning };
+      return { safe: true, reason: null, clusterWarning, lpWarning, lpWarningReason };
     } catch (err) {
       return { safe: true, reason: `RugCheck error (dilewati): ${err.message}`, clusterWarning: false };
     }
@@ -480,6 +491,8 @@ async function checkQualityGates(snapshot) {
     const rc = await checkRugCheckSafety(address);
     state.prices[address].rugcheckSafe = rc.safe;
     state.prices[address].clusterWarning = rc.clusterWarning || false;
+    state.prices[address].lpWarning = rc.lpWarning || false;
+    state.prices[address].lpWarningReason = rc.lpWarningReason || null;
     if (!rc.safe) return { pass: false, reason: `RugCheck: ${rc.reason}` };
   } else if (cached.rugcheckSafe === false) {
     return { pass: false, reason: 'RugCheck: sudah pernah ditandai tidak aman' };
@@ -510,8 +523,11 @@ async function checkQualityGates(snapshot) {
     pass: true,
     alertData: {
       address, symbol, name, price: snapshot.price, volume1h, marketCap, liquidityUsd, pairUrl: p.url,
+      dexId: p.dexId,
       clusterWarning: state.prices[address].clusterWarning || false,
       bundleWarning, bundlePercentage,
+      lpWarning: state.prices[address].lpWarning || false,
+      lpWarningReason: state.prices[address].lpWarningReason || null,
     },
   };
 }
