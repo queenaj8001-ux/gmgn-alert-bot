@@ -6,6 +6,7 @@ const http = require('http');
 // ==================== KONFIGURASI ====================
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const CHANNEL_ID = process.env.TELEGRAM_CHANNEL_ID || ''; // Channel untuk Hermes monitor
 const BIRDEYE_API_KEY = process.env.BIRDEYE_API_KEY;
 
 const PRICE_HIGH = parseFloat(process.env.PRICE_HIGH || '0.0001');
@@ -189,13 +190,27 @@ async function sendTelegramAlert({ symbol, name, address, price, volume1h, marke
     (pairUrl ? `Chart: ${pairUrl}` : '');
 
   const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+  
+  // Kirim ke chat pribadi
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chat_id: CHAT_ID, text, parse_mode: 'HTML', disable_web_page_preview: true }),
   });
   if (!res.ok) {
-    console.error('Gagal kirim notifikasi Telegram:', await res.text());
+    console.error('Gagal kirim notifikasi Telegram (chat pribadi):', await res.text());
+  }
+  
+  // Kirim ke channel juga (kalau CHANNEL_ID ada)
+  if (CHANNEL_ID) {
+    const resChannel = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: CHANNEL_ID, text, parse_mode: 'HTML', disable_web_page_preview: true }),
+    });
+    if (!resChannel.ok) {
+      console.error('Gagal kirim notifikasi Telegram (channel):', await resChannel.text());
+    }
   }
 }
 
