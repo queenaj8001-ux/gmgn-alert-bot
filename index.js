@@ -212,6 +212,44 @@ async function sendTelegramAlert({ symbol, name, address, price, volume1h, marke
       console.error('Gagal kirim notifikasi Telegram (channel):', await resChannel.text());
     }
   }
+  
+  // Kirim ke Hermes middleware untuk monitoring
+  try {
+    const hermesData = {
+      symbol,
+      name,
+      ca: address,
+      price,
+      volume1h,
+      marketCap,
+      liquidityUsd,
+      pairUrl,
+      dexId,
+      criteria: tierLabel,
+      clusterWarning,
+      bundleWarning,
+      bundlePercentage,
+      bundleDataMissing,
+      lpWarning,
+      lpWarningReason,
+      momentum,
+      timestamp: new Date().toISOString()
+    };
+    
+    const hermesRes = await fetch('http://localhost:3000/signal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(hermesData)
+    });
+    
+    if (!hermesRes.ok) {
+      console.error('Failed to notify Hermes middleware:', await hermesRes.text());
+    } else {
+      console.log('✅ Signal sent to Hermes middleware');
+    }
+  } catch (err) {
+    console.error('Error notifying Hermes middleware:', err.message);
+  }
 }
 
 function escapeHtml(str) {
