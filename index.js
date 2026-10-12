@@ -236,21 +236,11 @@ async function sendTelegramAlert({ symbol, name, address, price, volume1h, marke
       timestamp: new Date().toISOString()
     };
     
-    const HERMES_MIDDLEWARE_URL = 'https://signal-middleware-production-d0f6.up.railway.app/signal';
-    
-    const hermesRes = await fetch(HERMES_MIDDLEWARE_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(hermesData)
-    });
-    
-    if (!hermesRes.ok) {
-      console.error('Failed to notify Hermes middleware:', await hermesRes.text());
-    } else {
-      console.log('✅ Signal sent to Hermes middleware');
-    }
+    // Add signal directly to integrated queue
+    addSignalToQueue(hermesData);
+    console.log('✅ Signal added to integrated queue for Hermes poller');
   } catch (err) {
-    console.error('Error notifying Hermes middleware:', err.message);
+    console.error('Error adding signal to queue:', err.message);
   }
 }
 
@@ -784,10 +774,95 @@ async function checkPricesOnceInner() {
   saveState(state);
 }
 
-// ==================== HEALTH CHECK SERVER (untuk Railway) ====================
+// ==================== IN-MEMORY SIGNAL QUEUE ====================
+const signalQueue = [];
+const MAX_QUEUE_SIZE = 1000;
+
+function addSignalToQueue(signalData) {
+  signalQueue.push({
+    ...signalData,
+    _id: Date.now(),
+    receivedAtWIB: new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })
+  });
+  
+  // Trim queue if too large
+  if (signalQueue.length > MAX_QUEUE_SIZE) {
+    signalQueue.splice(0, signalQueue.length - MAX_QUEUE_SIZE);
+  }
+}
+
+// ==================== INTEGRATED MIDDLEWARE HTTP SERVER ====================
 const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => res.end('Bot aktif ✅')).listen(PORT, () => {
-  console.log(`Health check server jalan di port ${PORT}`);
+const server = http.createServer((req, res) => {
+  // CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  
+  if (req.method === 'OPTIONS') {
+    res.writeHead(200);
+    res.end();
+    return;
+  }
+  
+  // GET /signals - Hermes poller endpoint
+  if (req.method === 'GET' && req.url === '/signals') {
+    const response = {
+      success: true,
+      count: signalQueue.length,
+      signals: [...signalQueue],
+      timestamp: new Date().toISOString()
+    };
+    
+    // Clear queue after sending
+    signalQueue.length = 0;
+    
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(response));
+    return;
+  }
+  
+  // POST /signal - External signal receiver (optional, for compatibility)
+  if (req.method === 'POST' && req.url === '/signal') {
+    let body = '';
+    req.on('data', chunk => body += chunk.toString());
+    req.on('end', () => {
+      try {
+        const signalData = JSON.parse(body);
+        addSignalToQueue(signalData);
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+          success: true, 
+          queueSize: signalQueue.length 
+        }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+  
+  // GET /health - Health check
+  if (req.method === 'GET' && (req.url === '/health' || req.url === '/')) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ 
+      status: 'ok', 
+      queueSize: signalQueue.length,
+      timestamp: new Date().toISOString() 
+    }));
+    return;
+  }
+  
+  // 404 for unknown routes
+  res.writeHead(404, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'Not found' }));
+});
+
+server.listen(PORT, () => {
+  console.log(`🚀 Bot + Middleware integrated server running on port ${PORT}`);
+  console.log(`📡 Endpoints: GET /signals, POST /signal, GET /health`);
 });
 
 // ==================== JALANKAN ====================
