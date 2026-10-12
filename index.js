@@ -236,7 +236,10 @@ async function sendTelegramAlert({ symbol, name, address, price, volume1h, marke
       timestamp: new Date().toISOString()
     };
     
-    const hermesRes = await fetch('http://localhost:3000/signal', {
+    // GANTI DENGAN URL RAILWAY SETELAH DEPLOY
+    const HERMES_MIDDLEWARE_URL = 'https://signal-middleware.up.railway.app/signal';
+    
+    const hermesRes = await fetch(HERMES_MIDDLEWARE_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(hermesData)
