@@ -236,8 +236,7 @@ async function sendTelegramAlert({ symbol, name, address, price, volume1h, marke
       timestamp: new Date().toISOString()
     };
     
-    // GANTI DENGAN URL RAILWAY SETELAH DEPLOY
-    const HERMES_MIDDLEWARE_URL = 'https://signal-middleware.up.railway.app/signal';
+    const HERMES_MIDDLEWARE_URL = 'https://signal-middleware-production-d0f6.up.railway.app/signal';
     
     const hermesRes = await fetch(HERMES_MIDDLEWARE_URL, {
       method: 'POST',
