@@ -32,9 +32,15 @@ const ENABLE_HOLDER_CHECK = (process.env.ENABLE_HOLDER_CHECK ?? 'false') === 'tr
 const MIN_AVG_TRADE_SIZE_USD = parseFloat(process.env.MIN_AVG_TRADE_SIZE_USD || '15');
 
 // Bundle buys % dari Solana Tracker (API terpisah, perlu daftar akun sendiri, gratis
-// 2.500 request/bulan). Kalau SOLANATRACKER_API_KEY kosong, cek ini otomatis dilewati
+// 2.500 request/bulan per akun). Support multiple API keys untuk rotasi (pisah dengan koma).
+// Kalau SOLANATRACKER_API_KEY kosong, cek ini otomatis dilewati
 // (tidak mengganggu apa pun) — cuma jadi KETERANGAN tambahan, tidak memblokir sinyal.
-const SOLANATRACKER_API_KEY = process.env.SOLANATRACKER_API_KEY || '';
+const SOLANATRACKER_API_KEYS_RAW = process.env.SOLANATRACKER_API_KEY || '';
+const SOLANATRACKER_API_KEYS = SOLANATRACKER_API_KEYS_RAW
+  .split(',')
+  .map(k => k.trim())
+  .filter(k => k.length > 0);
+let solanaTrackerKeyIndex = 0; // Round-robin index
 const BUNDLE_WARNING_PCT = parseFloat(process.env.BUNDLE_WARNING_PCT || '65');
 
 const EXCLUDE_DEX_IDS = (process.env.EXCLUDE_DEX_IDS || '')
@@ -350,7 +356,7 @@ async function getHolderCount(address) {
 
 // ==================== SOLANA TRACKER: persentase bundle buys ====================
 async function getBundlePercentage(address, retryCount = 0) {
-  if (!SOLANATRACKER_API_KEY) {
+  if (SOLANATRACKER_API_KEYS.length === 0) {
     console.log(`Bundle check dilewati (${address}): SOLANATRACKER_API_KEY belum diisi.`);
     return null;
   }
@@ -358,13 +364,28 @@ async function getBundlePercentage(address, retryCount = 0) {
   const MAX_RETRIES = 3;
   const RETRY_DELAY_MS = 2000;
   
+  // Get current API key (round-robin)
+  const currentKey = SOLANATRACKER_API_KEYS[solanaTrackerKeyIndex];
+  
   try {
     const url = `https://data.solanatracker.io/tokens/${address}`;
-    const res = await fetch(url, { headers: { 'x-api-key': SOLANATRACKER_API_KEY } });
+    const res = await fetch(url, { headers: { 'x-api-key': currentKey } });
     
     if (!res.ok) {
-      // Retry untuk HTTP error (429 rate limit, 5xx server error, dll)
-      if (retryCount < MAX_RETRIES && (res.status === 429 || res.status >= 500)) {
+      // Rotate to next key on rate limit (429)
+      if (res.status === 429 && SOLANATRACKER_API_KEYS.length > 1) {
+        const oldIndex = solanaTrackerKeyIndex;
+        solanaTrackerKeyIndex = (solanaTrackerKeyIndex + 1) % SOLANATRACKER_API_KEYS.length;
+        console.log(`Bundle check (${address}): Rate limit key #${oldIndex + 1}, rotate ke key #${solanaTrackerKeyIndex + 1}`);
+        
+        if (retryCount < MAX_RETRIES) {
+          await sleep(500); // Short delay for key rotation
+          return getBundlePercentage(address, retryCount + 1);
+        }
+      }
+      
+      // Retry untuk HTTP error (5xx server error, dll)
+      if (retryCount < MAX_RETRIES && res.status >= 500) {
         console.log(`Bundle check gagal (${address}): HTTP ${res.status}, retry ${retryCount + 1}/${MAX_RETRIES} dalam ${RETRY_DELAY_MS}ms...`);
         await sleep(RETRY_DELAY_MS * (retryCount + 1)); // exponential backoff
         return getBundlePercentage(address, retryCount + 1);
@@ -376,10 +397,16 @@ async function getBundlePercentage(address, retryCount = 0) {
     const json = await res.json();
     const pct = json?.risk?.bundlers?.totalPercentage ?? null;
     
+    // Rotate to next key after successful call (distribute load evenly)
+    if (SOLANATRACKER_API_KEYS.length > 1) {
+      solanaTrackerKeyIndex = (solanaTrackerKeyIndex + 1) % SOLANATRACKER_API_KEYS.length;
+    }
+    
     if (pct == null) {
       console.log(`Bundle check (${address}): field bundlers.totalPercentage tidak ditemukan di respons Solana Tracker.`);
     } else {
-      console.log(`Bundle check (${address}): ${pct}%${retryCount > 0 ? ` (berhasil setelah ${retryCount} retry)` : ''}.`);
+      const keyLabel = SOLANATRACKER_API_KEYS.length > 1 ? ` [key #${(solanaTrackerKeyIndex === 0 ? SOLANATRACKER_API_KEYS.length : solanaTrackerKeyIndex)}]` : '';
+      console.log(`Bundle check (${address}): ${pct}%${retryCount > 0 ? ` (berhasil setelah ${retryCount} retry)` : ''}${keyLabel}.`);
     }
     return pct;
   } catch (err) {
