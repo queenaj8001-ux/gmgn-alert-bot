@@ -1,0 +1,57 @@
+services:
+  - type: web
+    name: gmgn-alert-bot
+    runtime: node
+    plan: free
+    buildCommand: npm install --only=production
+    startCommand: node index.js
+    healthCheckPath: /
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        value: "7996787091"
+      - key: TELEGRAM_CHANNEL_ID
+        value: "-1004495140814"
+      - key: SOLANATRACKER_API_KEY
+        sync: false
+      - key: BIRDEYE_API_KEY
+        sync: false
+      - key: BUNDLE_WARNING_PCT
+        value: "65"
+      - key: LIQUIDITY_MIN_USD
+        value: "2000"
+      - key: MIN_LIQUIDITY_FOR_SIGNAL_USD
+        value: "2000"
+      - key: MIN_MARKET_CAP_USD
+        value: "10000"
+      - key: MIN_VOLUME_1H_USD
+        value: "1000"
+      - key: RUGCHECK_MAX_RISK_SCORE
+        value: "50"
+      - key: MIN_TOKEN_AGE_MINUTES
+        value: "4"
+      - key: MAX_TOKEN_AGE_MINUTES
+        value: "120"
+      - key: CHECK_INTERVAL_SECONDS
+        value: "20"
+      - key: DISCOVER_INTERVAL_MINUTES
+        value: "45"
+      - key: GECKO_DISCOVER_INTERVAL_MINUTES
+        value: "15"
+      - key: BATCH_SIZE
+        value: "50"
+      - key: TOP_N
+        value: "50"
+      - key: PRICE_HIGH
+        value: "0.00034"
+      - key: PRICE_LOW
+        value: "0.00025"
+      - key: PRICE_HIGH_2
+        value: "0.000145"
+      - key: PRICE_LOW_2
+        value: "0.000065"
+      - key: FAST_CHECK_INTERVAL_SECONDS
+        value: "5"
+      - key: HIGH_RISK_FAST_CHECK_INTERVAL_SECONDS
+        value: "2"
