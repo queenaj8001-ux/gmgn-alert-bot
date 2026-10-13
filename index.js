@@ -417,11 +417,11 @@ async function getBirdeyeCandidates() {
   });
 }
 
-// ==================== SUMBER DISCOVERY 3: DEXSCREENER LATEST PAIRS (TERCEPAT!) ====================
+// ==================== SUMBER DISCOVERY 3: DEXSCREENER TOKEN PROFILES (TERCEPAT!) ====================
 async function getDexScreenerLatestPairs() {
   try {
-    // Get trending pairs on Solana (more reliable than search)
-    const url = 'https://api.dexscreener.com/latest/dex/pairs/solana';
+    // Get latest token profiles (tokens being promoted/updated - very fresh!)
+    const url = 'https://api.dexscreener.com/token-profiles/latest/v1';
     const res = await fetch(url, { headers: { accept: 'application/json' } });
     
     if (res.status === 429) {
@@ -430,39 +430,26 @@ async function getDexScreenerLatestPairs() {
     }
     
     if (!res.ok) {
-      console.error(`DexScreener latest pairs error ${res.status}`);
+      console.error(`DexScreener token profiles error ${res.status}`);
       return [];
     }
     
-    const json = await res.json();
-    const pairs = json?.pairs || [];
+    const profiles = await res.json();
+    if (!Array.isArray(profiles)) return [];
     
-    // Filter: created within last 30 minutes only (very fresh!)
-    const now = Date.now();
-    const thirtyMinutesAgo = now - (30 * 60 * 1000);
+    // Extract Solana token addresses from profiles
+    const solanaTokens = profiles
+      .filter(p => p.chainId === 'solana' && p.tokenAddress)
+      .map(p => p.tokenAddress);
     
-    const recentPairs = pairs.filter(p => {
-      // Must have pairCreatedAt
-      if (!p.pairCreatedAt) return false;
-      
-      const createdAt = new Date(p.pairCreatedAt).getTime();
-      
-      // Only pairs created in last 30 minutes
-      if (createdAt < thirtyMinutesAgo) return false;
-      
-      // Must have base token address
-      return p.baseToken?.address ? true : false;
-    });
-    
-    const addresses = recentPairs.map(p => p.baseToken.address).filter(Boolean);
-    
-    if (addresses.length > 0) {
-      console.log(`✅ DexScreener discovery: ${addresses.length} pair(s) baru (created <30min)`);
+    if (solanaTokens.length > 0) {
+      console.log(`✅ DexScreener discovery: ${solanaTokens.length} token profile(s) baru`);
     }
-    return [...new Set(addresses)]; // dedupe
+    
+    return [...new Set(solanaTokens)]; // dedupe
     
   } catch (err) {
-    console.error(`DexScreener latest pairs error: ${err.message}`);
+    console.error(`DexScreener token profiles error: ${err.message}`);
     return [];
   }
 }
