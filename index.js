@@ -32,15 +32,9 @@ const ENABLE_HOLDER_CHECK = (process.env.ENABLE_HOLDER_CHECK ?? 'false') === 'tr
 const MIN_AVG_TRADE_SIZE_USD = parseFloat(process.env.MIN_AVG_TRADE_SIZE_USD || '15');
 
 // Bundle buys % dari Solana Tracker (API terpisah, perlu daftar akun sendiri, gratis
-// 2.500 request/bulan per akun). Support multiple API keys untuk rotasi (pisah dengan koma).
-// Kalau SOLANATRACKER_API_KEY kosong, cek ini otomatis dilewati
+// 2.500 request/bulan). Kalau SOLANATRACKER_API_KEY kosong, cek ini otomatis dilewati
 // (tidak mengganggu apa pun) — cuma jadi KETERANGAN tambahan, tidak memblokir sinyal.
-const SOLANATRACKER_API_KEYS_RAW = process.env.SOLANATRACKER_API_KEY || '';
-const SOLANATRACKER_API_KEYS = SOLANATRACKER_API_KEYS_RAW
-  .split(',')
-  .map(k => k.trim())
-  .filter(k => k.length > 0);
-let solanaTrackerKeyIndex = 0; // Round-robin index
+const SOLANATRACKER_API_KEY = process.env.SOLANATRACKER_API_KEY || '';
 const BUNDLE_WARNING_PCT = parseFloat(process.env.BUNDLE_WARNING_PCT || '65');
 
 const EXCLUDE_DEX_IDS = (process.env.EXCLUDE_DEX_IDS || '')
@@ -242,11 +236,21 @@ async function sendTelegramAlert({ symbol, name, address, price, volume1h, marke
       timestamp: new Date().toISOString()
     };
     
-    // Add signal directly to integrated queue
-    addSignalToQueue(hermesData);
-    console.log('✅ Signal added to integrated queue for Hermes poller');
+    const HERMES_MIDDLEWARE_URL = 'https://signal-middleware-production-d0f6.up.railway.app/signal';
+    
+    const hermesRes = await fetch(HERMES_MIDDLEWARE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(hermesData)
+    });
+    
+    if (!hermesRes.ok) {
+      console.error('Failed to notify Hermes middleware:', await hermesRes.text());
+    } else {
+      console.log('✅ Signal sent to Hermes middleware');
+    }
   } catch (err) {
-    console.error('Error adding signal to queue:', err.message);
+    console.error('Error notifying Hermes middleware:', err.message);
   }
 }
 
@@ -356,7 +360,7 @@ async function getHolderCount(address) {
 
 // ==================== SOLANA TRACKER: persentase bundle buys ====================
 async function getBundlePercentage(address, retryCount = 0) {
-  if (SOLANATRACKER_API_KEYS.length === 0) {
+  if (!SOLANATRACKER_API_KEY) {
     console.log(`Bundle check dilewati (${address}): SOLANATRACKER_API_KEY belum diisi.`);
     return null;
   }
@@ -364,28 +368,13 @@ async function getBundlePercentage(address, retryCount = 0) {
   const MAX_RETRIES = 3;
   const RETRY_DELAY_MS = 2000;
   
-  // Get current API key (round-robin)
-  const currentKey = SOLANATRACKER_API_KEYS[solanaTrackerKeyIndex];
-  
   try {
     const url = `https://data.solanatracker.io/tokens/${address}`;
-    const res = await fetch(url, { headers: { 'x-api-key': currentKey } });
+    const res = await fetch(url, { headers: { 'x-api-key': SOLANATRACKER_API_KEY } });
     
     if (!res.ok) {
-      // Rotate to next key on rate limit (429)
-      if (res.status === 429 && SOLANATRACKER_API_KEYS.length > 1) {
-        const oldIndex = solanaTrackerKeyIndex;
-        solanaTrackerKeyIndex = (solanaTrackerKeyIndex + 1) % SOLANATRACKER_API_KEYS.length;
-        console.log(`Bundle check (${address}): Rate limit key #${oldIndex + 1}, rotate ke key #${solanaTrackerKeyIndex + 1}`);
-        
-        if (retryCount < MAX_RETRIES) {
-          await sleep(500); // Short delay for key rotation
-          return getBundlePercentage(address, retryCount + 1);
-        }
-      }
-      
-      // Retry untuk HTTP error (5xx server error, dll)
-      if (retryCount < MAX_RETRIES && res.status >= 500) {
+      // Retry untuk HTTP error (429 rate limit, 5xx server error, dll)
+      if (retryCount < MAX_RETRIES && (res.status === 429 || res.status >= 500)) {
         console.log(`Bundle check gagal (${address}): HTTP ${res.status}, retry ${retryCount + 1}/${MAX_RETRIES} dalam ${RETRY_DELAY_MS}ms...`);
         await sleep(RETRY_DELAY_MS * (retryCount + 1)); // exponential backoff
         return getBundlePercentage(address, retryCount + 1);
@@ -397,16 +386,10 @@ async function getBundlePercentage(address, retryCount = 0) {
     const json = await res.json();
     const pct = json?.risk?.bundlers?.totalPercentage ?? null;
     
-    // Rotate to next key after successful call (distribute load evenly)
-    if (SOLANATRACKER_API_KEYS.length > 1) {
-      solanaTrackerKeyIndex = (solanaTrackerKeyIndex + 1) % SOLANATRACKER_API_KEYS.length;
-    }
-    
     if (pct == null) {
       console.log(`Bundle check (${address}): field bundlers.totalPercentage tidak ditemukan di respons Solana Tracker.`);
     } else {
-      const keyLabel = SOLANATRACKER_API_KEYS.length > 1 ? ` [key #${(solanaTrackerKeyIndex === 0 ? SOLANATRACKER_API_KEYS.length : solanaTrackerKeyIndex)}]` : '';
-      console.log(`Bundle check (${address}): ${pct}%${retryCount > 0 ? ` (berhasil setelah ${retryCount} retry)` : ''}${keyLabel}.`);
+      console.log(`Bundle check (${address}): ${pct}%${retryCount > 0 ? ` (berhasil setelah ${retryCount} retry)` : ''}.`);
     }
     return pct;
   } catch (err) {
@@ -432,6 +415,47 @@ async function getBirdeyeCandidates() {
     const json = await res.json();
     return (json?.data?.tokens || []).map((t) => t.address).filter(Boolean);
   });
+}
+
+// ==================== SUMBER DISCOVERY 3: DEXSCREENER LATEST PAIRS (TERCEPAT!) ====================
+async function getDexScreenerLatestPairs() {
+  try {
+    // Get latest created pairs on Solana
+    const url = 'https://api.dexscreener.com/latest/dex/search/?q=SOL';
+    const res = await fetch(url, { headers: { accept: 'application/json' } });
+    
+    if (!res.ok) {
+      console.error(`DexScreener latest pairs error ${res.status}`);
+      return [];
+    }
+    
+    const json = await res.json();
+    const pairs = json?.pairs || [];
+    
+    // Filter: only Solana chain, created recently (within last hour)
+    const now = Date.now();
+    const oneHourAgo = now - (60 * 60 * 1000);
+    
+    const recentPairs = pairs.filter(p => {
+      if (p.chainId !== 'solana') return false;
+      
+      // Filter by pair age if pairCreatedAt available
+      const createdAt = p.pairCreatedAt ? new Date(p.pairCreatedAt).getTime() : 0;
+      if (createdAt > 0 && createdAt < oneHourAgo) return false;
+      
+      // Must have base token address
+      return p.baseToken?.address ? true : false;
+    });
+    
+    const addresses = recentPairs.map(p => p.baseToken.address).filter(Boolean);
+    
+    console.log(`✅ DexScreener discovery: ${addresses.length} pair(s) baru ditemukan`);
+    return [...new Set(addresses)]; // dedupe
+    
+  } catch (err) {
+    console.error(`DexScreener latest pairs error: ${err.message}`);
+    return [];
+  }
 }
 
 // ==================== SUMBER DISCOVERY 2: GECKOTERMINAL ====================
@@ -479,9 +503,13 @@ async function resolvePoolToTokenAddress(pairAddress) {
   }
 }
 
-// ==================== GABUNGKAN WATCHLIST DARI KEDUA SUMBER ====================
+// ==================== GABUNGKAN WATCHLIST DARI TIGA SUMBER ====================
 function rebuildWatchlist() {
-  const addresses = Array.from(new Set([...state.birdeyeAddresses, ...state.geckoAddresses]));
+  const addresses = Array.from(new Set([
+    ...state.birdeyeAddresses, 
+    ...state.geckoAddresses,
+    ...(state.dexscreenerAddresses || [])
+  ]));
   const newPrices = {};
   for (const addr of addresses) {
     newPrices[addr] = state.prices[addr] || { maxPrice: 0 };
@@ -489,7 +517,7 @@ function rebuildWatchlist() {
   state.watchlist = addresses;
   state.prices = newPrices;
   saveState(state);
-  console.log(`Watchlist gabungan diperbarui: ${addresses.length} koin unik (Birdeye: ${state.birdeyeAddresses.length}, GeckoTerminal: ${state.geckoAddresses.length}).`);
+  console.log(`Watchlist gabungan diperbarui: ${addresses.length} koin unik (Birdeye: ${state.birdeyeAddresses.length}, Gecko: ${state.geckoAddresses.length}, DexScreener: ${(state.dexscreenerAddresses || []).length}).`);
 }
 
 async function refreshBirdeyeWatchlist() {
@@ -517,6 +545,18 @@ async function refreshGeckoWatchlist() {
     console.log(`GeckoTerminal: ${geckoAddresses.length} koin.`);
   } catch (err) {
     console.error('Gagal ambil trending dari GeckoTerminal (dilewati):', err.message);
+  }
+  rebuildWatchlist();
+}
+
+async function refreshDexScreenerWatchlist() {
+  console.log(`\n[${new Date().toISOString()}] Refresh watchlist dari DexScreener (latest pairs)...`);
+  try {
+    const addrs = await getDexScreenerLatestPairs();
+    state.dexscreenerAddresses = addrs;
+    console.log(`DexScreener: ${addrs.length} token baru.`);
+  } catch (err) {
+    console.error('Gagal ambil latest pairs dari DexScreener (dilewati):', err.message);
   }
   rebuildWatchlist();
 }
@@ -801,104 +841,21 @@ async function checkPricesOnceInner() {
   saveState(state);
 }
 
-// ==================== IN-MEMORY SIGNAL QUEUE ====================
-const signalQueue = [];
-const MAX_QUEUE_SIZE = 1000;
-
-function addSignalToQueue(signalData) {
-  signalQueue.push({
-    ...signalData,
-    _id: Date.now(),
-    receivedAtWIB: new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })
-  });
-  
-  // Trim queue if too large
-  if (signalQueue.length > MAX_QUEUE_SIZE) {
-    signalQueue.splice(0, signalQueue.length - MAX_QUEUE_SIZE);
-  }
-}
-
-// ==================== INTEGRATED MIDDLEWARE HTTP SERVER ====================
+// ==================== HEALTH CHECK SERVER (untuk Railway) ====================
 const PORT = process.env.PORT || 3000;
-const server = http.createServer((req, res) => {
-  // CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  
-  if (req.method === 'OPTIONS') {
-    res.writeHead(200);
-    res.end();
-    return;
-  }
-  
-  // GET /signals - Hermes poller endpoint
-  if (req.method === 'GET' && req.url === '/signals') {
-    const response = {
-      success: true,
-      count: signalQueue.length,
-      signals: [...signalQueue],
-      timestamp: new Date().toISOString()
-    };
-    
-    // Clear queue after sending
-    signalQueue.length = 0;
-    
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(response));
-    return;
-  }
-  
-  // POST /signal - External signal receiver (optional, for compatibility)
-  if (req.method === 'POST' && req.url === '/signal') {
-    let body = '';
-    req.on('data', chunk => body += chunk.toString());
-    req.on('end', () => {
-      try {
-        const signalData = JSON.parse(body);
-        addSignalToQueue(signalData);
-        
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ 
-          success: true, 
-          queueSize: signalQueue.length 
-        }));
-      } catch (err) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: false, error: err.message }));
-      }
-    });
-    return;
-  }
-  
-  // GET /health - Health check
-  if (req.method === 'GET' && (req.url === '/health' || req.url === '/')) {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ 
-      status: 'ok', 
-      queueSize: signalQueue.length,
-      timestamp: new Date().toISOString() 
-    }));
-    return;
-  }
-  
-  // 404 for unknown routes
-  res.writeHead(404, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: 'Not found' }));
-});
-
-server.listen(PORT, () => {
-  console.log(`🚀 Bot + Middleware integrated server running on port ${PORT}`);
-  console.log(`📡 Endpoints: GET /signals, POST /signal, GET /health`);
+http.createServer((req, res) => res.end('Bot aktif ✅')).listen(PORT, () => {
+  console.log(`Health check server jalan di port ${PORT}`);
 });
 
 // ==================== JALANKAN ====================
 (async () => {
   await refreshBirdeyeWatchlist();
   await refreshGeckoWatchlist();
+  await refreshDexScreenerWatchlist();
   await checkPricesOnce();
   setInterval(refreshBirdeyeWatchlist, BIRDEYE_DISCOVER_INTERVAL_MS);
   setInterval(refreshGeckoWatchlist, GECKO_DISCOVER_INTERVAL_MS);
+  setInterval(refreshDexScreenerWatchlist, 60 * 1000); // Every 1 minute (fastest!)
   setInterval(checkPricesOnce, CHECK_INTERVAL_MS);
   setInterval(fastCheckArmedTokens, FAST_CHECK_INTERVAL_MS);
   setInterval(highRiskCheckArmedTokens, HIGH_RISK_FAST_CHECK_INTERVAL_MS);
