@@ -851,7 +851,7 @@ http.createServer((req, res) => res.end('Bot aktif ✅')).listen(PORT, () => {
   await checkPricesOnce();
   setInterval(refreshBirdeyeWatchlist, BIRDEYE_DISCOVER_INTERVAL_MS);
   setInterval(refreshGeckoWatchlist, GECKO_DISCOVER_INTERVAL_MS);
-  setInterval(refreshDexScreenerWatchlist, 60 * 1000); // Every 1 minute (fastest!)
+  setInterval(refreshDexScreenerWatchlist, 5 * 60 * 1000); // Every 5 minutes (avoid 429)
   setInterval(checkPricesOnce, CHECK_INTERVAL_MS);
   setInterval(fastCheckArmedTokens, FAST_CHECK_INTERVAL_MS);
   setInterval(highRiskCheckArmedTokens, HIGH_RISK_FAST_CHECK_INTERVAL_MS);
