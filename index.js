@@ -236,21 +236,11 @@ async function sendTelegramAlert({ symbol, name, address, price, volume1h, marke
       timestamp: new Date().toISOString()
     };
     
-    const HERMES_MIDDLEWARE_URL = 'https://signal-middleware-production-d0f6.up.railway.app/signal';
-    
-    const hermesRes = await fetch(HERMES_MIDDLEWARE_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(hermesData)
-    });
-    
-    if (!hermesRes.ok) {
-      console.error('Failed to notify Hermes middleware:', await hermesRes.text());
-    } else {
-      console.log('✅ Signal sent to Hermes middleware');
-    }
+    // Add signal directly to integrated queue
+    addSignalToQueue(hermesData);
+    console.log('✅ Signal added to integrated queue for Hermes poller');
   } catch (err) {
-    console.error('Error notifying Hermes middleware:', err.message);
+    console.error('Error adding signal to queue:', err.message);
   }
 }
 
@@ -417,43 +407,6 @@ async function getBirdeyeCandidates() {
   });
 }
 
-// ==================== SUMBER DISCOVERY 3: DEXSCREENER TOKEN PROFILES (TERCEPAT!) ====================
-async function getDexScreenerLatestPairs() {
-  try {
-    // Get latest token profiles (tokens being promoted/updated - very fresh!)
-    const url = 'https://api.dexscreener.com/token-profiles/latest/v1';
-    const res = await fetch(url, { headers: { accept: 'application/json' } });
-    
-    if (res.status === 429) {
-      console.error(`DexScreener rate limit (429), skip siklus ini`);
-      return [];
-    }
-    
-    if (!res.ok) {
-      console.error(`DexScreener token profiles error ${res.status}`);
-      return [];
-    }
-    
-    const profiles = await res.json();
-    if (!Array.isArray(profiles)) return [];
-    
-    // Extract Solana token addresses from profiles
-    const solanaTokens = profiles
-      .filter(p => p.chainId === 'solana' && p.tokenAddress)
-      .map(p => p.tokenAddress);
-    
-    if (solanaTokens.length > 0) {
-      console.log(`✅ DexScreener discovery: ${solanaTokens.length} token profile(s) baru`);
-    }
-    
-    return [...new Set(solanaTokens)]; // dedupe
-    
-  } catch (err) {
-    console.error(`DexScreener token profiles error: ${err.message}`);
-    return [];
-  }
-}
-
 // ==================== SUMBER DISCOVERY 2: GECKOTERMINAL ====================
 async function fetchGeckoPage(page) {
   const url = `https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=${page}`;
@@ -499,13 +452,9 @@ async function resolvePoolToTokenAddress(pairAddress) {
   }
 }
 
-// ==================== GABUNGKAN WATCHLIST DARI TIGA SUMBER ====================
+// ==================== GABUNGKAN WATCHLIST DARI KEDUA SUMBER ====================
 function rebuildWatchlist() {
-  const addresses = Array.from(new Set([
-    ...state.birdeyeAddresses, 
-    ...state.geckoAddresses,
-    ...(state.dexscreenerAddresses || [])
-  ]));
+  const addresses = Array.from(new Set([...state.birdeyeAddresses, ...state.geckoAddresses]));
   const newPrices = {};
   for (const addr of addresses) {
     newPrices[addr] = state.prices[addr] || { maxPrice: 0 };
@@ -513,7 +462,7 @@ function rebuildWatchlist() {
   state.watchlist = addresses;
   state.prices = newPrices;
   saveState(state);
-  console.log(`Watchlist gabungan diperbarui: ${addresses.length} koin unik (Birdeye: ${state.birdeyeAddresses.length}, Gecko: ${state.geckoAddresses.length}, DexScreener: ${(state.dexscreenerAddresses || []).length}).`);
+  console.log(`Watchlist gabungan diperbarui: ${addresses.length} koin unik (Birdeye: ${state.birdeyeAddresses.length}, GeckoTerminal: ${state.geckoAddresses.length}).`);
 }
 
 async function refreshBirdeyeWatchlist() {
@@ -541,18 +490,6 @@ async function refreshGeckoWatchlist() {
     console.log(`GeckoTerminal: ${geckoAddresses.length} koin.`);
   } catch (err) {
     console.error('Gagal ambil trending dari GeckoTerminal (dilewati):', err.message);
-  }
-  rebuildWatchlist();
-}
-
-async function refreshDexScreenerWatchlist() {
-  console.log(`\n[${new Date().toISOString()}] Refresh watchlist dari DexScreener (latest pairs)...`);
-  try {
-    const addrs = await getDexScreenerLatestPairs();
-    state.dexscreenerAddresses = addrs;
-    console.log(`DexScreener: ${addrs.length} token baru.`);
-  } catch (err) {
-    console.error('Gagal ambil latest pairs dari DexScreener (dilewati):', err.message);
   }
   rebuildWatchlist();
 }
@@ -837,21 +774,104 @@ async function checkPricesOnceInner() {
   saveState(state);
 }
 
-// ==================== HEALTH CHECK SERVER (untuk Railway) ====================
+// ==================== IN-MEMORY SIGNAL QUEUE ====================
+const signalQueue = [];
+const MAX_QUEUE_SIZE = 1000;
+
+function addSignalToQueue(signalData) {
+  signalQueue.push({
+    ...signalData,
+    _id: Date.now(),
+    receivedAtWIB: new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })
+  });
+  
+  // Trim queue if too large
+  if (signalQueue.length > MAX_QUEUE_SIZE) {
+    signalQueue.splice(0, signalQueue.length - MAX_QUEUE_SIZE);
+  }
+}
+
+// ==================== INTEGRATED MIDDLEWARE HTTP SERVER ====================
 const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => res.end('Bot aktif ✅')).listen(PORT, () => {
-  console.log(`Health check server jalan di port ${PORT}`);
+const server = http.createServer((req, res) => {
+  // CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  
+  if (req.method === 'OPTIONS') {
+    res.writeHead(200);
+    res.end();
+    return;
+  }
+  
+  // GET /signals - Hermes poller endpoint
+  if (req.method === 'GET' && req.url === '/signals') {
+    const response = {
+      success: true,
+      count: signalQueue.length,
+      signals: [...signalQueue],
+      timestamp: new Date().toISOString()
+    };
+    
+    // Clear queue after sending
+    signalQueue.length = 0;
+    
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(response));
+    return;
+  }
+  
+  // POST /signal - External signal receiver (optional, for compatibility)
+  if (req.method === 'POST' && req.url === '/signal') {
+    let body = '';
+    req.on('data', chunk => body += chunk.toString());
+    req.on('end', () => {
+      try {
+        const signalData = JSON.parse(body);
+        addSignalToQueue(signalData);
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+          success: true, 
+          queueSize: signalQueue.length 
+        }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+  
+  // GET /health - Health check
+  if (req.method === 'GET' && (req.url === '/health' || req.url === '/')) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ 
+      status: 'ok', 
+      queueSize: signalQueue.length,
+      timestamp: new Date().toISOString() 
+    }));
+    return;
+  }
+  
+  // 404 for unknown routes
+  res.writeHead(404, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'Not found' }));
+});
+
+server.listen(PORT, () => {
+  console.log(`🚀 Bot + Middleware integrated server running on port ${PORT}`);
+  console.log(`📡 Endpoints: GET /signals, POST /signal, GET /health`);
 });
 
 // ==================== JALANKAN ====================
 (async () => {
   await refreshBirdeyeWatchlist();
   await refreshGeckoWatchlist();
-  await refreshDexScreenerWatchlist();
   await checkPricesOnce();
   setInterval(refreshBirdeyeWatchlist, BIRDEYE_DISCOVER_INTERVAL_MS);
   setInterval(refreshGeckoWatchlist, GECKO_DISCOVER_INTERVAL_MS);
-  setInterval(refreshDexScreenerWatchlist, 5 * 60 * 1000); // Every 5 minutes (avoid 429)
   setInterval(checkPricesOnce, CHECK_INTERVAL_MS);
   setInterval(fastCheckArmedTokens, FAST_CHECK_INTERVAL_MS);
   setInterval(highRiskCheckArmedTokens, HIGH_RISK_FAST_CHECK_INTERVAL_MS);
