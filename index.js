@@ -407,6 +407,43 @@ async function getBirdeyeCandidates() {
   });
 }
 
+// ==================== SUMBER DISCOVERY 3: DEXSCREENER TOKEN PROFILES (TERCEPAT!) ====================
+async function getDexScreenerLatestPairs() {
+  try {
+    // Get latest token profiles (tokens being promoted/updated - very fresh!)
+    const url = 'https://api.dexscreener.com/token-profiles/latest/v1';
+    const res = await fetch(url, { headers: { accept: 'application/json' } });
+    
+    if (res.status === 429) {
+      console.error(`DexScreener rate limit (429), skip siklus ini`);
+      return [];
+    }
+    
+    if (!res.ok) {
+      console.error(`DexScreener token profiles error ${res.status}`);
+      return [];
+    }
+    
+    const profiles = await res.json();
+    if (!Array.isArray(profiles)) return [];
+    
+    // Extract Solana token addresses from profiles
+    const solanaTokens = profiles
+      .filter(p => p.chainId === 'solana' && p.tokenAddress)
+      .map(p => p.tokenAddress);
+    
+    if (solanaTokens.length > 0) {
+      console.log(`✅ DexScreener discovery: ${solanaTokens.length} token profile(s) baru`);
+    }
+    
+    return [...new Set(solanaTokens)]; // dedupe
+    
+  } catch (err) {
+    console.error(`DexScreener token profiles error: ${err.message}`);
+    return [];
+  }
+}
+
 // ==================== SUMBER DISCOVERY 2: GECKOTERMINAL ====================
 async function fetchGeckoPage(page) {
   const url = `https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=${page}`;
@@ -452,9 +489,13 @@ async function resolvePoolToTokenAddress(pairAddress) {
   }
 }
 
-// ==================== GABUNGKAN WATCHLIST DARI KEDUA SUMBER ====================
+// ==================== GABUNGKAN WATCHLIST DARI TIGA SUMBER ====================
 function rebuildWatchlist() {
-  const addresses = Array.from(new Set([...state.birdeyeAddresses, ...state.geckoAddresses]));
+  const addresses = Array.from(new Set([
+    ...state.birdeyeAddresses, 
+    ...state.geckoAddresses,
+    ...(state.dexscreenerAddresses || [])
+  ]));
   const newPrices = {};
   for (const addr of addresses) {
     newPrices[addr] = state.prices[addr] || { maxPrice: 0 };
@@ -462,7 +503,7 @@ function rebuildWatchlist() {
   state.watchlist = addresses;
   state.prices = newPrices;
   saveState(state);
-  console.log(`Watchlist gabungan diperbarui: ${addresses.length} koin unik (Birdeye: ${state.birdeyeAddresses.length}, GeckoTerminal: ${state.geckoAddresses.length}).`);
+  console.log(`Watchlist gabungan diperbarui: ${addresses.length} koin unik (Birdeye: ${state.birdeyeAddresses.length}, Gecko: ${state.geckoAddresses.length}, DexScreener: ${(state.dexscreenerAddresses || []).length}).`);
 }
 
 async function refreshBirdeyeWatchlist() {
@@ -490,6 +531,18 @@ async function refreshGeckoWatchlist() {
     console.log(`GeckoTerminal: ${geckoAddresses.length} koin.`);
   } catch (err) {
     console.error('Gagal ambil trending dari GeckoTerminal (dilewati):', err.message);
+  }
+  rebuildWatchlist();
+}
+
+async function refreshDexScreenerWatchlist() {
+  console.log(`\n[${new Date().toISOString()}] Refresh watchlist dari DexScreener (latest pairs)...`);
+  try {
+    const addrs = await getDexScreenerLatestPairs();
+    state.dexscreenerAddresses = addrs;
+    console.log(`DexScreener: ${addrs.length} token baru.`);
+  } catch (err) {
+    console.error('Gagal ambil latest pairs dari DexScreener (dilewati):', err.message);
   }
   rebuildWatchlist();
 }
@@ -869,9 +922,11 @@ server.listen(PORT, () => {
 (async () => {
   await refreshBirdeyeWatchlist();
   await refreshGeckoWatchlist();
+  await refreshDexScreenerWatchlist();
   await checkPricesOnce();
   setInterval(refreshBirdeyeWatchlist, BIRDEYE_DISCOVER_INTERVAL_MS);
   setInterval(refreshGeckoWatchlist, GECKO_DISCOVER_INTERVAL_MS);
+  setInterval(refreshDexScreenerWatchlist, 5 * 60 * 1000); // Every 5 minutes (avoid 429)
   setInterval(checkPricesOnce, CHECK_INTERVAL_MS);
   setInterval(fastCheckArmedTokens, FAST_CHECK_INTERVAL_MS);
   setInterval(highRiskCheckArmedTokens, HIGH_RISK_FAST_CHECK_INTERVAL_MS);
