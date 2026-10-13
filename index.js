@@ -420,9 +420,14 @@ async function getBirdeyeCandidates() {
 // ==================== SUMBER DISCOVERY 3: DEXSCREENER LATEST PAIRS (TERCEPAT!) ====================
 async function getDexScreenerLatestPairs() {
   try {
-    // Get latest created pairs on Solana
-    const url = 'https://api.dexscreener.com/latest/dex/search/?q=SOL';
+    // Get trending pairs on Solana (more reliable than search)
+    const url = 'https://api.dexscreener.com/latest/dex/pairs/solana';
     const res = await fetch(url, { headers: { accept: 'application/json' } });
+    
+    if (res.status === 429) {
+      console.error(`DexScreener rate limit (429), skip siklus ini`);
+      return [];
+    }
     
     if (!res.ok) {
       console.error(`DexScreener latest pairs error ${res.status}`);
@@ -432,16 +437,18 @@ async function getDexScreenerLatestPairs() {
     const json = await res.json();
     const pairs = json?.pairs || [];
     
-    // Filter: only Solana chain, created recently (within last hour)
+    // Filter: created within last 30 minutes only (very fresh!)
     const now = Date.now();
-    const oneHourAgo = now - (60 * 60 * 1000);
+    const thirtyMinutesAgo = now - (30 * 60 * 1000);
     
     const recentPairs = pairs.filter(p => {
-      if (p.chainId !== 'solana') return false;
+      // Must have pairCreatedAt
+      if (!p.pairCreatedAt) return false;
       
-      // Filter by pair age if pairCreatedAt available
-      const createdAt = p.pairCreatedAt ? new Date(p.pairCreatedAt).getTime() : 0;
-      if (createdAt > 0 && createdAt < oneHourAgo) return false;
+      const createdAt = new Date(p.pairCreatedAt).getTime();
+      
+      // Only pairs created in last 30 minutes
+      if (createdAt < thirtyMinutesAgo) return false;
       
       // Must have base token address
       return p.baseToken?.address ? true : false;
@@ -449,7 +456,9 @@ async function getDexScreenerLatestPairs() {
     
     const addresses = recentPairs.map(p => p.baseToken.address).filter(Boolean);
     
-    console.log(`✅ DexScreener discovery: ${addresses.length} pair(s) baru ditemukan`);
+    if (addresses.length > 0) {
+      console.log(`✅ DexScreener discovery: ${addresses.length} pair(s) baru (created <30min)`);
+    }
     return [...new Set(addresses)]; // dedupe
     
   } catch (err) {
