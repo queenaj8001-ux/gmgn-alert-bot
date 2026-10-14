@@ -132,3 +132,4 @@ mau saya bantu setup itu.
 Ubah `PRICE_HIGH`, `PRICE_LOW`, `LIQUIDITY_MIN_USD`,
 `DISCOVER_INTERVAL_MINUTES`, `CHECK_INTERVAL_MINUTES`, atau `TOP_N` di
 environment variables kapan saja tanpa perlu ubah kode.
+
