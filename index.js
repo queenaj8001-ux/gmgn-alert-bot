@@ -959,7 +959,25 @@ async function analyzeHeliusBundleBuys(tokenMint, launchTimestamp) {
       body: JSON.stringify({ transactions: signatures.slice(0, 50) })
     });
     
-    const parsedTxs = await parseResponse.json();
+    // Validate response before parsing
+    const parseText = await parseResponse.text();
+    if (!parseText || parseText.trim().length === 0) {
+      console.log('⚠️ Helius Enhanced API returned empty response');
+      return { isBundled: false, reason: 'Empty API response' };
+    }
+    
+    let parsedTxs;
+    try {
+      parsedTxs = JSON.parse(parseText);
+    } catch (parseError) {
+      console.log('⚠️ Helius Enhanced API invalid JSON:', parseText.substring(0, 100));
+      return { isBundled: false, reason: 'Invalid API response' };
+    }
+    
+    if (!Array.isArray(parsedTxs)) {
+      console.log('⚠️ Helius Enhanced API response not an array:', typeof parsedTxs);
+      return { isBundled: false, reason: 'Unexpected response format' };
+    }
     
     // Filter: swaps in first 60 seconds
     const earlyBuys = parsedTxs.filter(tx => {
