@@ -926,7 +926,7 @@ server.listen(PORT, () => {
   await checkPricesOnce();
   setInterval(refreshBirdeyeWatchlist, BIRDEYE_DISCOVER_INTERVAL_MS);
   setInterval(refreshGeckoWatchlist, GECKO_DISCOVER_INTERVAL_MS);
-  setInterval(refreshDexScreenerWatchlist, 5 * 60 * 1000); // Every 5 minutes (avoid 429)
+  setInterval(refreshDexScreenerWatchlist, 3 * 60 * 1000); // Every 3 minutes (faster discovery)
   setInterval(checkPricesOnce, CHECK_INTERVAL_MS);
   setInterval(fastCheckArmedTokens, FAST_CHECK_INTERVAL_MS);
   setInterval(highRiskCheckArmedTokens, HIGH_RISK_FAST_CHECK_INTERVAL_MS);
