@@ -950,78 +950,43 @@ async function analyzeHeliusBundleBuys(tokenMint, launchTimestamp) {
       return { isBundled: false, reason: 'No transactions yet' };
     }
     
-    const signatures = sigData.result.map(s => s.signature);
-    
-    // Parse transactions with Helius Enhanced API
-    const parseResponse = await fetch('https://api.helius.xyz/v0/transactions/?api-key=' + HELIUS_API_KEY, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ transactions: signatures.slice(0, 50) })
-    });
-    
-    // Validate response before parsing
-    const parseText = await parseResponse.text();
-    if (!parseText || parseText.trim().length === 0) {
-      console.log('⚠️ Helius Enhanced API returned empty response');
-      return { isBundled: false, reason: 'Empty API response' };
+    // Token too new, not enough transactions for analysis
+    if (sigData.result.length < 10) {
+      return { isBundled: false, reason: 'Too few transactions (< 10), token very new' };
     }
     
-    let parsedTxs;
-    try {
-      parsedTxs = JSON.parse(parseText);
-    } catch (parseError) {
-      console.log('⚠️ Helius Enhanced API invalid JSON:', parseText.substring(0, 100));
-      return { isBundled: false, reason: 'Invalid API response' };
-    }
+    // Analyze transaction patterns from signatures (no Enhanced API needed)
+    const signatures = sigData.result.slice(0, 50);
     
-    if (!Array.isArray(parsedTxs)) {
-      console.log('⚠️ Helius Enhanced API response not an array:', typeof parsedTxs);
-      return { isBundled: false, reason: 'Unexpected response format' };
-    }
-    
-    // Filter: swaps in first 60 seconds
-    const earlyBuys = parsedTxs.filter(tx => {
-      if (!tx || !tx.timestamp) return false;
-      const txTime = tx.timestamp * 1000; // Convert to ms
-      return (txTime - launchTimestamp < 60000) && // First 60 seconds
-             (tx.type === 'SWAP' || tx.type === 'UNKNOWN'); // Include unknown (pump.fun)
-    });
-    
-    if (earlyBuys.length === 0) {
-      return { isBundled: false, reason: 'No early buys detected' };
-    }
-    
-    // Analyze bundle patterns
+    // Group by slot to detect bundling
     const slotGroups = {};
     const wallets = new Set();
     
-    earlyBuys.forEach(tx => {
-      const slot = tx.slot;
-      const feePayer = tx.feePayer;
-      
+    signatures.forEach(sig => {
+      const slot = sig.slot;
       if (!slotGroups[slot]) slotGroups[slot] = [];
-      slotGroups[slot].push({ feePayer, signature: tx.signature });
-      wallets.add(feePayer);
+      slotGroups[slot].push(sig);
     });
     
-    // Detect bundling
-    const bundledSlots = Object.entries(slotGroups).filter(([_, txs]) => txs.length > 1);
-    const uniqueWallets = wallets.size;
-    const totalBuys = earlyBuys.length;
-    const bundlePercentage = totalBuys > 0 ? ((totalBuys - uniqueWallets) / totalBuys * 100) : 0;
+    // Simple bundle detection: multiple transactions in same slot
+    const bundledSlots = Object.entries(slotGroups).filter(([_, sigs]) => sigs.length > 1);
+    const totalTxs = signatures.length;
+    const uniqueSlots = Object.keys(slotGroups).length;
     
-    // Bundle criteria: >30% duplicate wallets OR multiple txs in same slot
-    const isBundled = bundlePercentage > 30 || bundledSlots.length > 0;
+    // If many txs in few slots = likely bundled
+    const slotConcentration = (totalTxs / uniqueSlots);
+    const isBundled = bundledSlots.length > 3 || slotConcentration > 2;
     
     return {
       isBundled,
-      bundlePercentage: bundlePercentage.toFixed(1),
-      uniqueWallets,
-      totalBuys,
+      bundlePercentage: ((bundledSlots.length / Object.keys(slotGroups).length) * 100).toFixed(1),
+      uniqueSlots,
+      totalTxs,
       bundledSlots: bundledSlots.length,
-      slotsWithMultipleTxs: bundledSlots.map(([slot, txs]) => ({
+      slotConcentration: slotConcentration.toFixed(2),
+      slotsWithMultipleTxs: bundledSlots.map(([slot, sigs]) => ({
         slot,
-        count: txs.length
+        count: sigs.length
       }))
     };
     
