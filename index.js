@@ -649,6 +649,8 @@ async function checkQualityGates(snapshot) {
       dexId: p.dexId,
       clusterWarning: state.prices[address].clusterWarning || false,
       bundleWarning, bundlePercentage, bundleDataMissing,
+      heliusBundleCheck: state.prices[address].heliusBundleCheck, // pending/clean/detected/failed
+      heliusBundleData: state.prices[address].heliusBundleData, // Helius analysis result
       lpWarning: state.prices[address].lpWarning || false,
       lpWarningReason: state.prices[address].lpWarningReason || null,
     },
@@ -919,6 +921,98 @@ server.listen(PORT, () => {
   console.log(`📡 Endpoints: GET /signals, POST /signal, GET /health`);
 });
 
+// ==================== HELIUS BUNDLE ANALYSIS ====================
+async function analyzeHeliusBundleBuys(tokenMint, launchTimestamp) {
+  const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
+  
+  if (!HELIUS_API_KEY) {
+    console.log('⚠️ HELIUS_API_KEY not set, skip bundle analysis');
+    return null;
+  }
+  
+  try {
+    const heliusUrl = `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
+    
+    // Get first 100 signatures for this token
+    const sigResponse = await fetch(heliusUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getSignaturesForAddress',
+        params: [tokenMint, { limit: 100 }]
+      })
+    });
+    
+    const sigData = await sigResponse.json();
+    if (!sigData.result || sigData.result.length === 0) {
+      return { isBundled: false, reason: 'No transactions yet' };
+    }
+    
+    const signatures = sigData.result.map(s => s.signature);
+    
+    // Parse transactions with Helius Enhanced API
+    const parseResponse = await fetch('https://api.helius.xyz/v0/transactions/?api-key=' + HELIUS_API_KEY, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transactions: signatures.slice(0, 50) })
+    });
+    
+    const parsedTxs = await parseResponse.json();
+    
+    // Filter: swaps in first 60 seconds
+    const earlyBuys = parsedTxs.filter(tx => {
+      if (!tx || !tx.timestamp) return false;
+      const txTime = tx.timestamp * 1000; // Convert to ms
+      return (txTime - launchTimestamp < 60000) && // First 60 seconds
+             (tx.type === 'SWAP' || tx.type === 'UNKNOWN'); // Include unknown (pump.fun)
+    });
+    
+    if (earlyBuys.length === 0) {
+      return { isBundled: false, reason: 'No early buys detected' };
+    }
+    
+    // Analyze bundle patterns
+    const slotGroups = {};
+    const wallets = new Set();
+    
+    earlyBuys.forEach(tx => {
+      const slot = tx.slot;
+      const feePayer = tx.feePayer;
+      
+      if (!slotGroups[slot]) slotGroups[slot] = [];
+      slotGroups[slot].push({ feePayer, signature: tx.signature });
+      wallets.add(feePayer);
+    });
+    
+    // Detect bundling
+    const bundledSlots = Object.entries(slotGroups).filter(([_, txs]) => txs.length > 1);
+    const uniqueWallets = wallets.size;
+    const totalBuys = earlyBuys.length;
+    const bundlePercentage = totalBuys > 0 ? ((totalBuys - uniqueWallets) / totalBuys * 100) : 0;
+    
+    // Bundle criteria: >30% duplicate wallets OR multiple txs in same slot
+    const isBundled = bundlePercentage > 30 || bundledSlots.length > 0;
+    
+    return {
+      isBundled,
+      bundlePercentage: bundlePercentage.toFixed(1),
+      uniqueWallets,
+      totalBuys,
+      bundledSlots: bundledSlots.length,
+      slotsWithMultipleTxs: bundledSlots.map(([slot, txs]) => ({
+        slot,
+        count: txs.length
+      }))
+    };
+    
+  } catch (error) {
+    console.error('❌ Helius bundle analysis error:', error.message);
+    return null;
+  }
+}
+
 // ==================== PUMPPORTAL WEBSOCKET (REAL-TIME DISCOVERY) ====================
 function setupPumpPortalWebSocket() {
   const ws = new WebSocket('wss://pumpportal.fun/api/data');
@@ -970,11 +1064,46 @@ function setupPumpPortalWebSocket() {
         discoveredAt: Date.now(),
         name: name,
         symbol: symbol,
-        initialMarketCap: msg.marketCapSol || 0
+        initialMarketCap: msg.marketCapSol || 0,
+        heliusBundleCheck: 'pending' // Will be checked in 30 seconds
       };
-      
+
       console.log(`✅ Added to watchlist (FAST-TRACK): ${symbol}`);
       console.log(`📊 Total watchlist: ${state.watchlist.length} tokens`);
+      
+      // Schedule Helius bundle analysis (30 seconds delay for enough transactions)
+      setTimeout(async () => {
+        console.log(`\n🔍 Running Helius bundle analysis for ${symbol}...`);
+        const launchTime = msg.timestamp || Date.now();
+        const bundleAnalysis = await analyzeHeliusBundleBuys(mint, launchTime);
+        
+        if (bundleAnalysis) {
+          if (bundleAnalysis.isBundled) {
+            console.log(`⚠️ BUNDLE DETECTED (Helius): ${symbol}`);
+            console.log(`   Bundle %: ${bundleAnalysis.bundlePercentage}%`);
+            console.log(`   Unique wallets: ${bundleAnalysis.uniqueWallets}/${bundleAnalysis.totalBuys}`);
+            console.log(`   Bundled slots: ${bundleAnalysis.bundledSlots}`);
+            
+            // Store bundle data
+            if (state.prices[mint]) {
+              state.prices[mint].heliusBundleCheck = 'detected';
+              state.prices[mint].heliusBundleData = bundleAnalysis;
+            }
+          } else {
+            console.log(`✅ No bundle detected (Helius): ${symbol}`);
+            if (state.prices[mint]) {
+              state.prices[mint].heliusBundleCheck = 'clean';
+              state.prices[mint].heliusBundleData = bundleAnalysis;
+            }
+          }
+        } else {
+          console.log(`⚠️ Helius bundle analysis failed for ${symbol}`);
+          if (state.prices[mint]) {
+            state.prices[mint].heliusBundleCheck = 'failed';
+          }
+        }
+      }, 30000); // Wait 30 seconds for enough transaction data
+
       
     } catch (e) {
       console.error('❌ WebSocket message parse error:', e.message);
