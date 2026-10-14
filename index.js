@@ -2,6 +2,7 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const WebSocket = require('ws'); // PumpPortal WebSocket for real-time discovery
 
 // ==================== KONFIGURASI ====================
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -918,8 +919,90 @@ server.listen(PORT, () => {
   console.log(`📡 Endpoints: GET /signals, POST /signal, GET /health`);
 });
 
+// ==================== PUMPPORTAL WEBSOCKET (REAL-TIME DISCOVERY) ====================
+function setupPumpPortalWebSocket() {
+  const ws = new WebSocket('wss://pumpportal.fun/api/data');
+  
+  ws.on('open', () => {
+    console.log('✅ PumpPortal WebSocket connected');
+    
+    // Subscribe to new token launches
+    ws.send(JSON.stringify({
+      method: 'subscribeNewToken'
+    }));
+    
+    console.log('📡 Subscribed to real-time token launches (PumpPortal)');
+  });
+  
+  ws.on('message', (data) => {
+    try {
+      const msg = JSON.parse(data);
+      
+      // Extract token info
+      const mint = msg.mint;
+      const name = msg.name || 'Unknown';
+      const symbol = msg.symbol || 'Unknown';
+      const txType = msg.txType;
+      
+      // Only process new token creations
+      if (txType !== 'create' || !mint) return;
+      
+      // Check if already in watchlist
+      if (state.watchlist.includes(mint)) {
+        console.log(`⚠️ WebSocket: ${symbol} already in watchlist, skip`);
+        return;
+      }
+      
+      console.log(`\n${'='.repeat(60)}`);
+      console.log(`🚀 WEBSOCKET DISCOVERY (REAL-TIME)`);
+      console.log(`${'='.repeat(60)}`);
+      console.log(`🪙 Token: ${name} (${symbol})`);
+      console.log(`📝 Mint: ${mint}`);
+      console.log(`⏱️ Detected: ${new Date().toISOString()}`);
+      console.log(`📊 Market Cap: ${msg.marketCapSol?.toFixed(2) || 'N/A'} SOL`);
+      console.log(`${'='.repeat(60)}\n`);
+      
+      // Add to watchlist immediately (fast-track)
+      state.watchlist.push(mint);
+      state.prices[mint] = {
+        maxPrice: 0,
+        source: 'websocket',
+        discoveredAt: Date.now(),
+        name: name,
+        symbol: symbol,
+        initialMarketCap: msg.marketCapSol || 0
+      };
+      
+      console.log(`✅ Added to watchlist (FAST-TRACK): ${symbol}`);
+      console.log(`📊 Total watchlist: ${state.watchlist.length} tokens`);
+      
+    } catch (e) {
+      console.error('❌ WebSocket message parse error:', e.message);
+    }
+  });
+  
+  ws.on('error', (error) => {
+    console.error('❌ PumpPortal WebSocket error:', error.message);
+  });
+  
+  ws.on('close', () => {
+    console.log('🔌 PumpPortal WebSocket closed, reconnecting in 5 seconds...');
+    setTimeout(setupPumpPortalWebSocket, 5000);
+  });
+  
+  return ws;
+}
+
 // ==================== JALANKAN ====================
 (async () => {
+  // Start PumpPortal WebSocket for real-time discovery
+  setupPumpPortalWebSocket();
+  console.log('🔥 HYBRID DISCOVERY SYSTEM ACTIVE:');
+  console.log('  - WebSocket (PumpPortal): 0-10 sec (real-time)');
+  console.log('  - Polling (Birdeye): 45 min (top volume)');
+  console.log('  - Polling (Gecko): 15 min (trending)');
+  console.log('  - Polling (DexScreener): 3 min (backup)\n');
+  
   await refreshBirdeyeWatchlist();
   await refreshGeckoWatchlist();
   await refreshDexScreenerWatchlist();
