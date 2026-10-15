@@ -155,14 +155,26 @@ function computeMomentum(recentPrices) {
 }
 
 // ==================== TELEGRAM ====================
-async function sendTelegramAlert({ symbol, name, address, price, volume1h, marketCap, liquidityUsd, pairUrl, dexId, momentum, tierLabel, clusterWarning, bundleWarning, bundlePercentage, bundleDataMissing, lpWarning, lpWarningReason }) {
+async function sendTelegramAlert({ symbol, name, address, price, volume1h, marketCap, liquidityUsd, pairUrl, dexId, momentum, tierLabel, clusterWarning, bundleWarning, bundlePercentage, bundleDataMissing, lpWarning, lpWarningReason, heliusBundleCheck, heliusBundleData }) {
   const mcText = marketCap != null ? `$${Number(marketCap).toLocaleString('en-US')}` : 'Data tidak tersedia';
   const risky = liquidityUsd == null || liquidityUsd < LIQUIDITY_MIN_USD;
   const riskLine = risky ? `\n⚠️ RISIKO LIKUIDITAS TINGGI` : '';
   const clusterLine = clusterWarning ? `\n⚠️ Hati-hati: terdeteksi cluster wallet (mirip pola diagram gelembung mencurigakan)` : '';
-  const bundleLine = bundleWarning ? `\n⚠️ Hati-hati: Bundle buys tinggi (${bundlePercentage.toFixed(1)}%)` : '';
-  const bundleMissingLine = bundleDataMissing ? `\n⚠️ Data Bundle buys tidak tersedia (Solana Tracker API gagal)` : '';
   
+  // Helius Bundle Detection (NEW - blockchain-level)
+  let heliusBundleLine = '';
+  if (heliusBundleCheck === 'detected' && heliusBundleData) {
+    heliusBundleLine = `\n⚠️ BUNDLE DETECTED (Helius): ${heliusBundleData.bundlePercentage}% (${heliusBundleData.bundledSlots} bundled slots, concentration: ${heliusBundleData.slotConcentration})`;
+  } else if (heliusBundleCheck === 'clean' && heliusBundleData) {
+    heliusBundleLine = `\n✅ Bundle Check (Helius): Clean (${heliusBundleData.uniqueSlots} unique slots)`;
+  } else if (heliusBundleCheck === 'pending') {
+    heliusBundleLine = `\n🔍 Bundle Check (Helius): Analyzing... (results in 30s)`;
+  }
+  
+  // Solana Tracker fallback (deprecated, only if Helius unavailable)
+  const bundleLine = bundleWarning && !heliusBundleCheck ? `\n⚠️ Bundle buys tinggi (Solana Tracker): ${bundlePercentage.toFixed(1)}%` : '';
+  const bundleMissingLine = bundleDataMissing && !heliusBundleCheck ? `\n⚠️ Data Bundle tidak tersedia (API gagal)` : '';
+
   // Warning khusus untuk PumpSwap dan LP tidak aman
   const dexLower = (dexId || '').toLowerCase();
   const isPumpSwap = dexLower.includes('pumpswap') || dexLower.includes('pump_swap');
@@ -183,6 +195,7 @@ async function sendTelegramAlert({ symbol, name, address, price, volume1h, marke
     `Market Cap: ${mcText}` +
     riskLine +
     clusterLine +
+    heliusBundleLine +
     bundleLine +
     bundleMissingLine +
     pumpSwapLine +
