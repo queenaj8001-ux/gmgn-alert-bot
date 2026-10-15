@@ -155,7 +155,7 @@ function computeMomentum(recentPrices) {
 }
 
 // ==================== TELEGRAM ====================
-async function sendTelegramAlert({ symbol, name, address, price, volume1h, marketCap, liquidityUsd, pairUrl, dexId, momentum, tierLabel, clusterWarning, bundleWarning, bundlePercentage, bundleDataMissing, lpWarning, lpWarningReason, heliusBundleCheck, heliusBundleData }) {
+async function sendTelegramAlert({ symbol, name, address, price, volume1h, marketCap, liquidityUsd, pairUrl, dexId, momentum, tierLabel, clusterWarning, bundleWarning, bundlePercentage, bundleDataMissing, lpWarning, lpWarningReason, lpLocked, lockedPercentage, heliusBundleCheck, heliusBundleData }) {
   const mcText = marketCap != null ? `$${Number(marketCap).toLocaleString('en-US')}` : 'Data tidak tersedia';
   const risky = liquidityUsd == null || liquidityUsd < LIQUIDITY_MIN_USD;
   const riskLine = risky ? `\n⚠️ RISIKO LIKUIDITAS TINGGI` : '';
@@ -179,7 +179,14 @@ async function sendTelegramAlert({ symbol, name, address, price, volume1h, marke
   const dexLower = (dexId || '').toLowerCase();
   const isPumpSwap = dexLower.includes('pumpswap') || dexLower.includes('pump_swap');
   const pumpSwapLine = isPumpSwap ? `\n⚠️ Token PumpSwap: baru graduate dari bonding curve, perlu extra validasi` : '';
-  const lpLine = lpWarning ? `\n⚠️ LP Warning: ${lpWarningReason}` : '';
+  
+  // LP Lock status (Birdeye)
+  let lpLine = '';
+  if (lpLocked && lockedPercentage) {
+    lpLine = `\n✅ LP Lock: ${lockedPercentage}% ter-lock/burn`;
+  } else if (lpWarning) {
+    lpLine = `\n⚠️ LP Warning: ${lpWarningReason}`;
+  }
 
   const momentumLine = momentum && momentum.pct != null
     ? `\nMomentum: ${momentum.label} (${momentum.pct.toFixed(1)}% dalam ${momentum.seconds}d terakhir)`
@@ -341,6 +348,83 @@ async function checkRugCheckSafety(address) {
       return { safe: true, reason: null, clusterWarning, lpWarning, lpWarningReason };
     } catch (err) {
       return { safe: true, reason: `RugCheck error (dilewati): ${err.message}`, clusterWarning: false };
+    }
+  });
+}
+
+// ==================== BIRDEYE: TOKEN SECURITY (LP LOCK CHECK) ====================
+async function getBirdeyeTokenSecurity(address) {
+  return throttledBirdeye(async () => {
+    try {
+      const url = `https://public-api.birdeye.so/defi/token_security?address=${address}`;
+      const res = await fetch(url, {
+        headers: {
+          'X-API-KEY': BIRDEYE_API_KEY,
+          'x-chain': 'solana'
+        }
+      });
+      
+      if (!res.ok) {
+        console.log(`Birdeye token_security gagal untuk ${address}: HTTP ${res.status}`);
+        return { lpLocked: null, lpWarning: true, lpWarningReason: 'Data LP tidak tersedia dari Birdeye' };
+      }
+      
+      const json = await res.json();
+      const data = json?.data;
+      
+      if (!data) {
+        return { lpLocked: null, lpWarning: true, lpWarningReason: 'Data security tidak tersedia' };
+      }
+      
+      // Parse LP holders
+      const lpHolders = data.lpHolders || [];
+      
+      if (lpHolders.length === 0) {
+        return { lpLocked: null, lpWarning: true, lpWarningReason: 'Data LP holders tidak tersedia' };
+      }
+      
+      // Check if any LP is locked or burned
+      const lockedLPs = lpHolders.filter(holder => holder.is_locked === 1 || holder.is_locked === true);
+      const totalLPBalance = lpHolders.reduce((sum, h) => sum + parseFloat(h.balance || 0), 0);
+      const lockedLPBalance = lockedLPs.reduce((sum, h) => sum + parseFloat(h.balance || 0), 0);
+      const lockedPercentage = totalLPBalance > 0 ? (lockedLPBalance / totalLPBalance * 100) : 0;
+      
+      // LP считается safe if:
+      // - >80% locked/burned, OR
+      // - Top holder <10% and some LP locked
+      const topHolderBalance = lpHolders.length > 0 ? parseFloat(lpHolders[0]?.balance || 0) : 0;
+      const topHolderPct = totalLPBalance > 0 ? (topHolderBalance / totalLPBalance * 100) : 0;
+      
+      let lpWarning = false;
+      let lpWarningReason = null;
+      
+      if (lockedPercentage >= 80) {
+        // Safe: majority locked
+        lpWarning = false;
+      } else if (lockedPercentage > 0 && topHolderPct < 10) {
+        // Safe: some locked + distributed
+        lpWarning = false;
+      } else if (lockedPercentage === 0) {
+        // Risky: nothing locked
+        lpWarning = true;
+        lpWarningReason = `LP tidak di-lock/burn (top holder: ${topHolderPct.toFixed(1)}%)`;
+      } else {
+        // Moderate risk: partially locked but not enough
+        lpWarning = true;
+        lpWarningReason = `Hanya ${lockedPercentage.toFixed(1)}% LP ter-lock (top holder: ${topHolderPct.toFixed(1)}%)`;
+      }
+      
+      return {
+        lpLocked: lockedPercentage > 0,
+        lockedPercentage: lockedPercentage.toFixed(1),
+        lpHolderCount: lpHolders.length,
+        lpWarning,
+        lpWarningReason
+      };
+      
+    } catch (err) {
+      console.error(`Birdeye token_security error untuk ${address}:`, err.message);
+      return { lpLocked: null, lpWarning: true, lpWarningReason: `Birdeye API error: ${err.message}` };
     }
   });
 }
@@ -624,8 +708,21 @@ async function checkQualityGates(snapshot) {
     const rc = await checkRugCheckSafety(address);
     state.prices[address].rugcheckSafe = rc.safe;
     state.prices[address].clusterWarning = rc.clusterWarning || false;
-    state.prices[address].lpWarning = rc.lpWarning || false;
-    state.prices[address].lpWarningReason = rc.lpWarningReason || null;
+    
+    // LP check: prioritize Birdeye token_security over RugCheck
+    const birdeyeSecurity = await getBirdeyeTokenSecurity(address);
+    if (birdeyeSecurity.lpWarning !== undefined) {
+      // Birdeye data available - use it for LP lock status
+      state.prices[address].lpWarning = birdeyeSecurity.lpWarning;
+      state.prices[address].lpWarningReason = birdeyeSecurity.lpWarningReason;
+      state.prices[address].lpLocked = birdeyeSecurity.lpLocked;
+      state.prices[address].lockedPercentage = birdeyeSecurity.lockedPercentage;
+    } else {
+      // Fallback to RugCheck LP data if Birdeye unavailable
+      state.prices[address].lpWarning = rc.lpWarning || false;
+      state.prices[address].lpWarningReason = rc.lpWarningReason || null;
+    }
+    
     if (!rc.safe) return { pass: false, reason: `RugCheck: ${rc.reason}` };
   } else if (cached.rugcheckSafe === false) {
     return { pass: false, reason: 'RugCheck: sudah pernah ditandai tidak aman' };
@@ -666,6 +763,8 @@ async function checkQualityGates(snapshot) {
       heliusBundleData: state.prices[address].heliusBundleData, // Helius analysis result
       lpWarning: state.prices[address].lpWarning || false,
       lpWarningReason: state.prices[address].lpWarningReason || null,
+      lpLocked: state.prices[address].lpLocked, // Birdeye: true if any LP locked
+      lockedPercentage: state.prices[address].lockedPercentage, // Birdeye: % locked
     },
   };
 }
