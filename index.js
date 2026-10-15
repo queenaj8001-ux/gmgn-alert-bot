@@ -1057,6 +1057,23 @@ async function analyzeHeliusBundleBuys(tokenMint, launchTimestamp) {
       })
     });
     
+    // Check HTTP status before parsing JSON
+    if (!sigResponse.ok) {
+      const status = sigResponse.status;
+      const statusText = sigResponse.statusText;
+      
+      if (status === 401) {
+        console.error(`⚠️ Helius 401 Unauthorized for ${tokenMint.substring(0, 8)}... - API key issue or token not accessible`);
+        return { isBundled: false, reason: 'Helius 401: API key issue or restricted token' };
+      } else if (status === 429) {
+        console.error(`⚠️ Helius rate limit (429) for ${tokenMint.substring(0, 8)}...`);
+        return { isBundled: false, reason: 'Helius rate limit exceeded' };
+      } else {
+        console.error(`⚠️ Helius HTTP ${status} (${statusText}) for ${tokenMint.substring(0, 8)}...`);
+        return { isBundled: false, reason: `Helius HTTP ${status}` };
+      }
+    }
+    
     const sigData = await sigResponse.json();
     if (!sigData.result || sigData.result.length === 0) {
       return { isBundled: false, reason: 'No transactions yet' };
