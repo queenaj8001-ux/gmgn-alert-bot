@@ -85,7 +85,7 @@ const MOMENTUM_WINDOW = parseInt(process.env.MOMENTUM_WINDOW || '5', 10);
 const MOMENTUM_FLAT_THRESHOLD_PCT = parseFloat(process.env.MOMENTUM_FLAT_THRESHOLD_PCT || '3');
 
 const TOP_N = parseInt(process.env.TOP_N || '50', 10);
-const GECKO_PAGES = parseInt(process.env.GECKO_PAGES || '3', 10);
+const GECKO_PAGES = parseInt(process.env.GECKO_PAGES || '1', 10);
 
 const STATE_DIR = process.env.STATE_DIR || __dirname;
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
