@@ -57,8 +57,10 @@ const MAX_TOKEN_AGE_MINUTES = parseFloat(process.env.MAX_TOKEN_AGE_MINUTES || '6
 // Dua interval discovery TERPISAH: Birdeye (mahal secara CU, jarang) vs GeckoTerminal
 // (gratis tanpa batas CU, bisa lebih sering) — supaya koin yang baru mulai ramai
 // terdeteksi lebih cepat tanpa membebani jatah gratis Birdeye.
+// GECKO: Default 30 detik (0.5 menit), minimum 15 detik untuk safety rate limit
 const BIRDEYE_DISCOVER_INTERVAL_MS = parseInt(process.env.DISCOVER_INTERVAL_MINUTES || '45', 10) * 60 * 1000;
-const GECKO_DISCOVER_INTERVAL_MS = parseInt(process.env.GECKO_DISCOVER_INTERVAL_MINUTES || '15', 10) * 60 * 1000;
+const GECKO_DISCOVER_INTERVAL_SECONDS = parseFloat(process.env.GECKO_DISCOVER_INTERVAL_SECONDS || '30');
+const GECKO_DISCOVER_INTERVAL_MS = Math.max(GECKO_DISCOVER_INTERVAL_SECONDS * 1000, 15000); // Minimum 15s
 
 const CHECK_INTERVAL_MS = process.env.CHECK_INTERVAL_SECONDS
   ? parseFloat(process.env.CHECK_INTERVAL_SECONDS) * 1000
@@ -88,8 +90,8 @@ const GECKO_PAGES = parseInt(process.env.GECKO_PAGES || '3', 10);
 const STATE_DIR = process.env.STATE_DIR || __dirname;
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
 
-console.log('gmgn-alert-bot — versi 2026-09-27-v31 (bundle check dicoba ulang kalau gagal, tidak permanen gagal)');
-console.log(`Discovery Birdeye: tiap ${(BIRDEYE_DISCOVER_INTERVAL_MS / 60000).toFixed(0)} menit. Discovery GeckoTerminal: tiap ${(GECKO_DISCOVER_INTERVAL_MS / 60000).toFixed(0)} menit. Cek harga: tiap ${(CHECK_INTERVAL_MS / 1000).toFixed(0)} detik.`);
+console.log('gmgn-alert-bot — versi 2026-10-16-v32 (Gecko discovery 30s, hybrid with DexScreener WebSocket)');
+console.log(`Discovery Birdeye: tiap ${(BIRDEYE_DISCOVER_INTERVAL_MS / 60000).toFixed(0)} menit. Discovery GeckoTerminal: tiap ${(GECKO_DISCOVER_INTERVAL_MS / 1000).toFixed(0)} detik. Cek harga: tiap ${(CHECK_INTERVAL_MS / 1000).toFixed(0)} detik.`);
 
 if (!BOT_TOKEN || !CHAT_ID || !BIRDEYE_API_KEY) {
   console.error('❌ TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, dan BIRDEYE_API_KEY wajib diisi di environment variables (lihat .env.example).');
@@ -1241,7 +1243,7 @@ function setupPumpPortalWebSocket() {
   console.log('🔥 HYBRID DISCOVERY SYSTEM ACTIVE:');
   console.log('  - WebSocket (PumpPortal): 0-10 sec (real-time)');
   console.log('  - Polling (Birdeye): 45 min (top volume)');
-  console.log('  - Polling (Gecko): 15 min (trending)');
+  console.log(`  - Polling (Gecko): ${(GECKO_DISCOVER_INTERVAL_MS / 1000).toFixed(0)} sec (trending - FAST!)`);
   console.log('  - Polling (DexScreener): 3 min (backup)\n');
   
   await refreshBirdeyeWatchlist();
