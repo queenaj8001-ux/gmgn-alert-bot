@@ -90,7 +90,7 @@ const GECKO_PAGES = parseInt(process.env.GECKO_PAGES || '1', 10);
 const STATE_DIR = process.env.STATE_DIR || __dirname;
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
 
-console.log('gmgn-alert-bot — versi 2026-10-16-v33 (Helius Enhanced WebSocket + Gecko 30s hybrid discovery)');
+console.log('gmgn-alert-bot — versi 2026-10-18-v34 (Fixed: Helius filter + new API key + rate limits)');
 console.log(`Discovery Birdeye: tiap ${(BIRDEYE_DISCOVER_INTERVAL_MS / 60000).toFixed(0)} menit. Discovery GeckoTerminal: tiap ${(GECKO_DISCOVER_INTERVAL_MS / 1000).toFixed(0)} detik. Cek harga: tiap ${(CHECK_INTERVAL_MS / 1000).toFixed(0)} detik.`);
 
 if (!BOT_TOKEN || !CHAT_ID || !BIRDEYE_API_KEY) {
@@ -1191,9 +1191,6 @@ function setupHeliusEnhancedWebSocket() {
           // Skip if already in watchlist
           if (state.watchlist.includes(mint)) continue;
           
-          // Check if it's a pump.fun token (mint ends with 'pump')
-          if (!mint.endsWith('pump')) continue;
-          
           console.log(`\n${'='.repeat(60)}`);
           console.log(`⚡ HELIUS DISCOVERY (DEX ACTIVITY)`);
           console.log(`${'='.repeat(60)}`);
@@ -1351,7 +1348,7 @@ function setupPumpPortalWebSocket() {
   await checkPricesOnce();
   setInterval(refreshBirdeyeWatchlist, BIRDEYE_DISCOVER_INTERVAL_MS);
   setInterval(refreshGeckoWatchlist, GECKO_DISCOVER_INTERVAL_MS);
-  setInterval(refreshDexScreenerWatchlist, 5 * 60 * 1000); // Every 5 minutes (stable, avoid 429)
+  setInterval(refreshDexScreenerWatchlist, 10 * 60 * 1000); // Every 10 minutes (reduced from 5min to avoid 429)
   setInterval(checkPricesOnce, CHECK_INTERVAL_MS);
   setInterval(fastCheckArmedTokens, FAST_CHECK_INTERVAL_MS);
   setInterval(highRiskCheckArmedTokens, HIGH_RISK_FAST_CHECK_INTERVAL_MS);
