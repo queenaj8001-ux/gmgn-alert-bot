@@ -90,7 +90,7 @@ const GECKO_PAGES = parseInt(process.env.GECKO_PAGES || '1', 10);
 const STATE_DIR = process.env.STATE_DIR || __dirname;
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
 
-console.log('gmgn-alert-bot — versi 2026-10-18-v35 (Multi-Helius: 3 accounts × 5 DEXs = 15 subscriptions!)');
+console.log('gmgn-alert-bot — versi 2026-10-18-v36 (Multi-Helius + Auto Health Check)');
 console.log(`Discovery Birdeye: tiap ${(BIRDEYE_DISCOVER_INTERVAL_MS / 60000).toFixed(0)} menit. Discovery GeckoTerminal: tiap ${(GECKO_DISCOVER_INTERVAL_MS / 1000).toFixed(0)} detik. Cek harga: tiap ${(CHECK_INTERVAL_MS / 1000).toFixed(0)} detik.`);
 
 if (!BOT_TOKEN || !CHAT_ID || !BIRDEYE_API_KEY) {
@@ -137,6 +137,78 @@ function makeThrottledQueue(minSpacingMs) {
 }
 const throttledBirdeye = makeThrottledQueue(1100);
 const throttledRugCheck = makeThrottledQueue(300);
+
+// ==================== HELIUS HEALTH CHECK (MONITOR KEY EXPIRATION) ====================
+async function checkHeliusHealth() {
+  const keys = [
+    { name: 'Key #1', key: process.env.HELIUS_API_KEY },
+    { name: 'Key #2', key: process.env.HELIUS_API_KEY_2 },
+    { name: 'Key #3', key: process.env.HELIUS_API_KEY_3 }
+  ].filter(k => k.key); // Hanya cek key yang ada
+  
+  if (keys.length === 0) {
+    console.log('⚠️ Tidak ada Helius API key untuk dicek');
+    return;
+  }
+  
+  let expiredCount = 0;
+  let expiredKeys = [];
+  
+  for (const {name, key} of keys) {
+    try {
+      const response = await fetch(
+        `https://mainnet.helius-rpc.com/?api-key=${key}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'getHealth'
+          })
+        }
+      );
+      
+      if (response.status === 401) {
+        expiredCount++;
+        expiredKeys.push(name);
+        console.log(`❌ ${name} EXPIRED (401 Unauthorized)`);
+      } else if (response.ok) {
+        console.log(`✅ ${name} masih aktif`);
+      } else {
+        console.log(`⚠️ ${name} status tidak jelas: ${response.status}`);
+      }
+      
+    } catch (error) {
+      console.log(`⚠️ Error cek ${name}: ${error.message}`);
+    }
+  }
+  
+  // Kirim notifikasi Telegram jika ada key expired
+  if (expiredCount > 0) {
+    const workingKeys = keys.length - expiredCount;
+    const emoji = workingKeys === 0 ? '🚨' : '⚠️';
+    
+    const message = 
+      `${emoji} HELIUS API KEY EXPIRED\n\n` +
+      `Key yang expired: ${expiredKeys.join(', ')}\n` +
+      `Key yang masih kerja: ${workingKeys}/${keys.length}\n\n` +
+      (workingKeys > 0 
+        ? `✅ Bot masih jalan pakai key lainnya\n\n` 
+        : `🚨 URGENT: Semua key mati! Bot tidak bisa detect!\n\n`) +
+      `Tindakan:\n` +
+      `1. Buka dashboard.helius.dev\n` +
+      `2. Generate key baru\n` +
+      `3. Update Railway env var: ${expiredKeys.join(', ').replace('#', '')}\n` +
+      `4. Railway akan auto-restart`;
+    
+    await sendTelegramMessage(message);
+  }
+}
+
+// Jalankan health check tiap 5 menit
+setInterval(checkHeliusHealth, 5 * 60 * 1000);
+console.log('🏥 Helius health check: aktif (tiap 5 menit)\n');
 
 // ==================== MOMENTUM ====================
 function computeMomentum(recentPrices) {
@@ -1485,6 +1557,11 @@ function setupPumpPortalWebSocket() {
   // Start PumpPortal WebSocket for real-time discovery
   setupPumpPortalWebSocket();
   setupMultiHeliusEnhancedWebSocket();
+  
+  // Jalankan health check pertama kali saat startup
+  console.log('🏥 Menjalankan Helius health check pertama kali...');
+  await checkHeliusHealth();
+  
   console.log('🔥 HYBRID DISCOVERY SYSTEM ACTIVE:');
   console.log('  - WebSocket (Multi-Helius): 0-3 sec (3 connections × 5 DEXs)');
   console.log('  - WebSocket (PumpPortal): 0-10 sec (new token creation)');
