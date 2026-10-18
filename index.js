@@ -90,7 +90,7 @@ const GECKO_PAGES = parseInt(process.env.GECKO_PAGES || '1', 10);
 const STATE_DIR = process.env.STATE_DIR || __dirname;
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
 
-console.log('gmgn-alert-bot — versi 2026-10-18-v34 (Fixed: Helius filter + new API key + rate limits)');
+console.log('gmgn-alert-bot — versi 2026-10-18-v35 (Multi-Helius: 3 accounts × 5 DEXs = 15 subscriptions!)');
 console.log(`Discovery Birdeye: tiap ${(BIRDEYE_DISCOVER_INTERVAL_MS / 60000).toFixed(0)} menit. Discovery GeckoTerminal: tiap ${(GECKO_DISCOVER_INTERVAL_MS / 1000).toFixed(0)} detik. Cek harga: tiap ${(CHECK_INTERVAL_MS / 1000).toFixed(0)} detik.`);
 
 if (!BOT_TOKEN || !CHAT_ID || !BIRDEYE_API_KEY) {
@@ -1127,7 +1127,157 @@ async function analyzeHeliusBundleBuys(tokenMint, launchTimestamp) {
   }
 }
 
-// ==================== HELIUS ENHANCED WEBSOCKET (REAL-TIME DEX ACTIVITY) ====================
+// ==================== MULTI-HELIUS ENHANCED WEBSOCKET (3x REDUNDANCY + 5 DEX) ====================
+function setupMultiHeliusEnhancedWebSocket() {
+  const HELIUS_KEYS = [
+    process.env.HELIUS_API_KEY,      // Key 1 (primary)
+    process.env.HELIUS_API_KEY_2,    // Key 2 (backup)
+    process.env.HELIUS_API_KEY_3     // Key 3 (backup)
+  ].filter(key => key); // Remove undefined keys
+  
+  if (HELIUS_KEYS.length === 0) {
+    console.log('⚠️ No HELIUS_API_KEY set, skipping Helius WebSocket discovery');
+    return;
+  }
+  
+  console.log(`🔥 Starting ${HELIUS_KEYS.length} Helius WebSocket connection(s)...`);
+  
+  // DEX Programs to monitor (5 major Solana DEXs)
+  const DEX_PROGRAMS = [
+    { name: 'Raydium AMM v4', address: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8' },
+    { name: 'Orca Whirlpool', address: 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc' },
+    { name: 'Meteora DLMM', address: 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo' },
+    { name: 'Phoenix', address: 'PhoeNiXZ8ByJGLkxNfZRnkUfjvmuYqLR89jjFHGqdXY' },
+    { name: 'Lifinity', address: 'EewxydAPCCVuNEyrVN68PuSYdQ7wKn27V9Gjeoi8dy3S' }
+  ];
+  
+  const WebSocket = require('ws');
+  
+  // Create WebSocket connection for each API key
+  HELIUS_KEYS.forEach((apiKey, keyIndex) => {
+    const wsUrl = `wss://mainnet.helius-rpc.com/?api-key=${apiKey}`;
+    let ws;
+    let reconnectTimeout;
+    
+    function connect() {
+      ws = new WebSocket(wsUrl);
+      
+      ws.on('open', () => {
+        console.log(`✅ Helius WebSocket #${keyIndex + 1} connected`);
+        
+        // Subscribe to ALL DEX programs
+        DEX_PROGRAMS.forEach((dex, dexIndex) => {
+          const subscriptionId = keyIndex * 100 + dexIndex + 1;
+          
+          ws.send(JSON.stringify({
+            jsonrpc: '2.0',
+            id: subscriptionId,
+            method: 'transactionSubscribe',
+            params: [
+              {
+                accountInclude: [dex.address],
+                failed: false
+              },
+              {
+                commitment: 'confirmed',
+                encoding: 'jsonParsed',
+                transactionDetails: 'full',
+                showRewards: false,
+                maxSupportedTransactionVersion: 0
+              }
+            ]
+          }));
+        });
+        
+        console.log(`📡 WebSocket #${keyIndex + 1}: Subscribed to ${DEX_PROGRAMS.length} DEX programs`);
+      });
+      
+      ws.on('message', async (data) => {
+        try {
+          const response = JSON.parse(data);
+          
+          // Skip subscription confirmation
+          if (response.result !== undefined && !response.params) return;
+          
+          // Parse transaction notification
+          const tx = response.params?.result?.transaction;
+          if (!tx) return;
+          
+          // Extract token mints from transaction
+          const mints = extractTokenMintsFromTransaction(tx);
+          
+          // Process each detected token
+          for (const mint of mints) {
+            // Skip if already in watchlist
+            if (state.watchlist.includes(mint)) continue;
+            
+            console.log(`\n${'='.repeat(60)}`);
+            console.log(`⚡ HELIUS DISCOVERY #${keyIndex + 1} (DEX ACTIVITY)`);
+            console.log(`${'='.repeat(60)}`);
+            console.log(`🪙 Token Mint: ${mint}`);
+            console.log(`⏱️ Detected: ${new Date().toISOString()}`);
+            console.log(`📊 Source: Multi-DEX (${DEX_PROGRAMS.length} programs)`);
+            console.log(`🔑 Connection: #${keyIndex + 1}`);
+            console.log(`${'='.repeat(60)}\n`);
+            
+            // Add to watchlist immediately
+            state.watchlist.push(mint);
+            state.prices[mint] = {
+              maxPrice: 0,
+              source: `helius-multi-${keyIndex + 1}`,
+              discoveredAt: Date.now(),
+              symbol: 'Unknown',
+              name: 'Unknown'
+            };
+            
+            console.log(`✅ Added to watchlist (MULTI-DEX): ${mint}`);
+            console.log(`📊 Total watchlist: ${state.watchlist.length} tokens`);
+          }
+          
+        } catch (e) {
+          console.log(`⚠️ Helius WS #${keyIndex + 1} message error:`, e.message);
+        }
+      });
+      
+      ws.on('error', (err) => {
+        console.log(`❌ Helius WebSocket #${keyIndex + 1} error: ${err.message}`);
+      });
+      
+      ws.on('close', () => {
+        console.log(`🔌 Helius WebSocket #${keyIndex + 1} closed, reconnecting in 5s...`);
+        reconnectTimeout = setTimeout(connect, 5000);
+      });
+    }
+    
+    // Helper: Extract token mints from transaction
+    function extractTokenMintsFromTransaction(tx) {
+      const mints = new Set();
+      
+      try {
+        const accounts = tx.meta?.postTokenBalances || [];
+        for (const acc of accounts) {
+          if (acc.mint) mints.add(acc.mint);
+        }
+        
+        const preAccounts = tx.meta?.preTokenBalances || [];
+        for (const acc of preAccounts) {
+          if (acc.mint) mints.add(acc.mint);
+        }
+      } catch (e) {
+        // Ignore parse errors
+      }
+      
+      return Array.from(mints);
+    }
+    
+    connect();
+  });
+  
+  console.log(`🎯 Multi-Helius system: ${HELIUS_KEYS.length} connections × ${DEX_PROGRAMS.length} DEXs = ${HELIUS_KEYS.length * DEX_PROGRAMS.length} subscriptions`);
+  console.log(`⚡ Expected detection: 0-3 seconds!\n`);
+}
+
+// ==================== OLD SINGLE HELIUS WEBSOCKET (REPLACED) ====================
 function setupHeliusEnhancedWebSocket() {
   const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
   
@@ -1334,13 +1484,13 @@ function setupPumpPortalWebSocket() {
 (async () => {
   // Start PumpPortal WebSocket for real-time discovery
   setupPumpPortalWebSocket();
-  setupHeliusEnhancedWebSocket();
+  setupMultiHeliusEnhancedWebSocket();
   console.log('🔥 HYBRID DISCOVERY SYSTEM ACTIVE:');
+  console.log('  - WebSocket (Multi-Helius): 0-3 sec (3 connections × 5 DEXs)');
   console.log('  - WebSocket (PumpPortal): 0-10 sec (new token creation)');
-  console.log('  - WebSocket (Helius): 0-5 sec (DEX trading activity)');
   console.log('  - Polling (Birdeye): 45 min (top volume)');
-  console.log(`  - Polling (Gecko): ${(GECKO_DISCOVER_INTERVAL_MS / 1000).toFixed(0)} sec (trending - FAST!)`);
-  console.log('  - Polling (DexScreener): 3 min (backup)\n');
+  console.log(`  - Polling (Gecko): ${(GECKO_DISCOVER_INTERVAL_MS / 1000).toFixed(0)} sec (trending backup)`);
+  console.log('  - Polling (DexScreener): 10 min (backup)\n');
   
   await refreshBirdeyeWatchlist();
   await refreshGeckoWatchlist();
