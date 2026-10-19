@@ -90,7 +90,7 @@ const GECKO_PAGES = parseInt(process.env.GECKO_PAGES || '1', 10);
 const STATE_DIR = process.env.STATE_DIR || __dirname;
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
 
-console.log('gmgn-alert-bot — versi 2026-10-18-v36 (Multi-Helius + Auto Health Check)');
+console.log('gmgn-alert-bot — versi 2026-10-19-v37 (Pump.fun Graduation LP Auto-Burn Detection)');
 console.log(`Discovery Birdeye: tiap ${(BIRDEYE_DISCOVER_INTERVAL_MS / 60000).toFixed(0)} menit. Discovery GeckoTerminal: tiap ${(GECKO_DISCOVER_INTERVAL_MS / 1000).toFixed(0)} detik. Cek harga: tiap ${(CHECK_INTERVAL_MS / 1000).toFixed(0)} detik.`);
 
 if (!BOT_TOKEN || !CHAT_ID || !BIRDEYE_API_KEY) {
@@ -229,7 +229,7 @@ function computeMomentum(recentPrices) {
 }
 
 // ==================== TELEGRAM ====================
-async function sendTelegramAlert({ symbol, name, address, price, volume1h, marketCap, liquidityUsd, pairUrl, dexId, momentum, tierLabel, clusterWarning, bundleWarning, bundlePercentage, bundleDataMissing, lpWarning, lpWarningReason, lpLocked, lockedPercentage, heliusBundleCheck, heliusBundleData }) {
+async function sendTelegramAlert({ symbol, name, address, price, volume1h, marketCap, liquidityUsd, pairUrl, dexId, momentum, tierLabel, clusterWarning, bundleWarning, bundlePercentage, bundleDataMissing, lpWarning, lpWarningReason, lpLocked, lockedPercentage, lpBurnedByGraduation, heliusBundleCheck, heliusBundleData }) {
   const mcText = marketCap != null ? `$${Number(marketCap).toLocaleString('en-US')}` : 'Data tidak tersedia';
   const risky = liquidityUsd == null || liquidityUsd < LIQUIDITY_MIN_USD;
   const riskLine = risky ? `\n⚠️ RISIKO LIKUIDITAS TINGGI` : '';
@@ -254,9 +254,13 @@ async function sendTelegramAlert({ symbol, name, address, price, volume1h, marke
   const isPumpSwap = dexLower.includes('pumpswap') || dexLower.includes('pump_swap');
   const pumpSwapLine = isPumpSwap ? `\n⚠️ Token PumpSwap: baru graduate dari bonding curve, perlu extra validasi` : '';
   
-  // LP Lock status (Birdeye)
+  // LP Lock status
   let lpLine = '';
-  if (lpLocked && lockedPercentage) {
+  if (lpBurnedByGraduation) {
+    // Graduated token: LP auto-burned by Pump.fun
+    lpLine = `\n✅ LP BURNED: Token graduated from Pump.fun (LP 100% burned to incinerator)`;
+  } else if (lpLocked && lockedPercentage) {
+    // Non-graduated: Birdeye data
     lpLine = `\n✅ LP Lock: ${lockedPercentage}% ter-lock/burn`;
   } else if (lpWarning) {
     lpLine = `\n⚠️ LP Warning: ${lpWarningReason}`;
@@ -782,21 +786,32 @@ async function checkQualityGates(snapshot) {
     const rc = await checkRugCheckSafety(address);
     state.prices[address].rugcheckSafe = rc.safe;
     state.prices[address].clusterWarning = rc.clusterWarning || false;
-    
-    // LP check: prioritize Birdeye token_security over RugCheck
-    const birdeyeSecurity = await getBirdeyeTokenSecurity(address);
-    if (birdeyeSecurity.lpWarning !== undefined) {
-      // Birdeye data available - use it for LP lock status
-      state.prices[address].lpWarning = birdeyeSecurity.lpWarning;
-      state.prices[address].lpWarningReason = birdeyeSecurity.lpWarningReason;
-      state.prices[address].lpLocked = birdeyeSecurity.lpLocked;
-      state.prices[address].lockedPercentage = birdeyeSecurity.lockedPercentage;
+
+    // LP check: Skip Birdeye for graduated tokens (LP auto-burned by Pump.fun)
+    if (cached.isGraduated && cached.lpBurned) {
+      // Graduated token: LP already burned to incinerator
+      state.prices[address].lpWarning = false;
+      state.prices[address].lpWarningReason = null;
+      state.prices[address].lpLocked = true;
+      state.prices[address].lockedPercentage = '100.0';
+      state.prices[address].lpBurnedByGraduation = true;
+      console.log(`✅ LP check skipped for graduated token ${address}: LP auto-burned`);
     } else {
-      // Fallback to RugCheck LP data if Birdeye unavailable
-      state.prices[address].lpWarning = rc.lpWarning || false;
-      state.prices[address].lpWarningReason = rc.lpWarningReason || null;
+      // Non-graduated: Use Birdeye token_security (old method)
+      const birdeyeSecurity = await getBirdeyeTokenSecurity(address);
+      if (birdeyeSecurity.lpWarning !== undefined) {
+        // Birdeye data available - use it for LP lock status
+        state.prices[address].lpWarning = birdeyeSecurity.lpWarning;
+        state.prices[address].lpWarningReason = birdeyeSecurity.lpWarningReason;
+        state.prices[address].lpLocked = birdeyeSecurity.lpLocked;
+        state.prices[address].lockedPercentage = birdeyeSecurity.lockedPercentage;
+      } else {
+        // Fallback to RugCheck LP data if Birdeye unavailable
+        state.prices[address].lpWarning = rc.lpWarning || false;
+        state.prices[address].lpWarningReason = rc.lpWarningReason || null;
+      }
     }
-    
+
     if (!rc.safe) return { pass: false, reason: `RugCheck: ${rc.reason}` };
   } else if (cached.rugcheckSafe === false) {
     return { pass: false, reason: 'RugCheck: sudah pernah ditandai tidak aman' };
@@ -1500,6 +1515,42 @@ function setupPumpPortalWebSocket() {
       const name = msg.name || 'Unknown';
       const symbol = msg.symbol || 'Unknown';
       const txType = msg.txType;
+      
+      // Handle 'complete' event (token graduated to PumpSwap/Raydium)
+      if (txType === 'complete' && mint) {
+        console.log(`\n${'='.repeat(60)}`);
+        console.log(`🎓 TOKEN GRADUATED (LP AUTO-BURNED)`);
+        console.log(`${'='.repeat(60)}`);
+        console.log(`🪙 Token: ${name} (${symbol})`);
+        console.log(`📝 Mint: ${mint}`);
+        console.log(`⏱️ Graduated: ${new Date().toISOString()}`);
+        console.log(`✅ LP Status: BURNED to incinerator (Pump.fun default)`);
+        console.log(`${'='.repeat(60)}\n`);
+        
+        // Mark token as graduated with LP burned
+        if (state.prices[mint]) {
+          state.prices[mint].isGraduated = true;
+          state.prices[mint].lpBurned = true;
+          state.prices[mint].graduatedAt = Date.now();
+          console.log(`✅ Updated token status: ${symbol} - LP BURNED (graduated)`);
+        } else {
+          // Token not in watchlist yet, add it with graduated status
+          state.watchlist.push(mint);
+          state.prices[mint] = {
+            maxPrice: 0,
+            source: 'websocket-graduated',
+            discoveredAt: Date.now(),
+            name: name,
+            symbol: symbol,
+            isGraduated: true,
+            lpBurned: true,
+            graduatedAt: Date.now()
+          };
+          console.log(`✅ Added graduated token to watchlist: ${symbol}`);
+        }
+        
+        return; // Don't process as 'create' event
+      }
       
       // Only process new token creations
       if (txType !== 'create' || !mint) return;
