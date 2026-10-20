@@ -286,7 +286,8 @@ async function sendTelegramAlert({ symbol, name, address, price, volume1h, marke
     pumpSwapLine +
     lpLine +
     momentumLine + `\n` +
-    (pairUrl ? `Chart: ${pairUrl}` : '');
+    (pairUrl ? `Chart: ${pairUrl}\n` : '') +
+    `📊 <b>Live Chart (1m):</b> https://dexscreener.com/solana/${address}?chart=1m&theme=dark`;
 
   // Generate chart (optional - only if generate_chart.py exists)
   let chartPath = null;
