@@ -1,1 +1,7 @@
 .github/workflows/ci.yml
+node_modules/
+*.backup
+*.backup_*
+__pycache__/
+*.pyc
+.coverage
