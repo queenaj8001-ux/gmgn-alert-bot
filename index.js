@@ -229,7 +229,7 @@ function computeMomentum(recentPrices) {
 }
 
 // ==================== TELEGRAM ====================
-async function sendTelegramAlert({ symbol, name, address, price, volume1h, marketCap, liquidityUsd, pairUrl, dexId, momentum, tierLabel, clusterWarning, bundleWarning, bundlePercentage, bundleDataMissing, lpWarning, lpWarningReason, lpLocked, lockedPercentage, lpBurnedByGraduation, heliusBundleCheck, heliusBundleData }) {
+async function sendTelegramAlert({ symbol, name, address, price, volume1h, marketCap, liquidityUsd, pairUrl, dexId, momentum, tierLabel, clusterWarning, bundleWarning, bundlePercentage, bundleDataMissing, lpBurnedByGraduation, heliusBundleCheck, heliusBundleData }) {
   const mcText = marketCap != null ? `$${Number(marketCap).toLocaleString('en-US')}` : 'Data tidak tersedia';
   const risky = liquidityUsd == null || liquidityUsd < LIQUIDITY_MIN_USD;
   const riskLine = risky ? `\n⚠️ RISIKO LIKUIDITAS TINGGI` : '';
@@ -259,11 +259,6 @@ async function sendTelegramAlert({ symbol, name, address, price, volume1h, marke
   if (lpBurnedByGraduation) {
     // Graduated token: LP auto-burned by Pump.fun
     lpLine = `\n✅ LP BURNED: Token graduated from Pump.fun (LP 100% burned to incinerator)`;
-  } else if (lpLocked && lockedPercentage) {
-    // Non-graduated: Birdeye data
-    lpLine = `\n✅ LP Lock: ${lockedPercentage}% ter-lock/burn`;
-  } else if (lpWarning) {
-    lpLine = `\n⚠️ LP Warning: ${lpWarningReason}`;
   }
 
   const momentumLine = momentum && momentum.pct != null
@@ -286,8 +281,7 @@ async function sendTelegramAlert({ symbol, name, address, price, volume1h, marke
     pumpSwapLine +
     lpLine +
     momentumLine + `\n` +
-    (pairUrl ? `Chart: ${pairUrl}\n` : '') +
-    `📊 <b>Live Chart (1m):</b> https://dexscreener.com/solana/${address}?chart=1m&theme=dark`;
+    (pairUrl ? `Chart: ${pairUrl}` : '');
 
   // Generate chart (optional - only if generate_chart.py exists)
   let chartPath = null;
@@ -489,81 +483,8 @@ async function checkRugCheckSafety(address) {
 }
 
 // ==================== BIRDEYE: TOKEN SECURITY (LP LOCK CHECK) ====================
-async function getBirdeyeTokenSecurity(address) {
-  return throttledBirdeye(async () => {
-    try {
-      const url = `https://public-api.birdeye.so/defi/token_security?address=${address}`;
-      const res = await fetch(url, {
-        headers: {
-          'X-API-KEY': BIRDEYE_API_KEY,
-          'x-chain': 'solana'
-        }
-      });
-      
-      if (!res.ok) {
-        console.log(`Birdeye token_security gagal untuk ${address}: HTTP ${res.status}`);
-        return { lpLocked: null, lpWarning: true, lpWarningReason: 'Data LP tidak tersedia dari Birdeye' };
-      }
-      
-      const json = await res.json();
-      const data = json?.data;
-      
-      if (!data) {
-        return { lpLocked: null, lpWarning: true, lpWarningReason: 'Data security tidak tersedia' };
-      }
-      
-      // Parse LP holders
-      const lpHolders = data.lpHolders || [];
-      
-      if (lpHolders.length === 0) {
-        return { lpLocked: null, lpWarning: true, lpWarningReason: 'Data LP holders tidak tersedia' };
-      }
-      
-      // Check if any LP is locked or burned
-      const lockedLPs = lpHolders.filter(holder => holder.is_locked === 1 || holder.is_locked === true);
-      const totalLPBalance = lpHolders.reduce((sum, h) => sum + parseFloat(h.balance || 0), 0);
-      const lockedLPBalance = lockedLPs.reduce((sum, h) => sum + parseFloat(h.balance || 0), 0);
-      const lockedPercentage = totalLPBalance > 0 ? (lockedLPBalance / totalLPBalance * 100) : 0;
-      
-      // LP считается safe if:
-      // - >80% locked/burned, OR
-      // - Top holder <10% and some LP locked
-      const topHolderBalance = lpHolders.length > 0 ? parseFloat(lpHolders[0]?.balance || 0) : 0;
-      const topHolderPct = totalLPBalance > 0 ? (topHolderBalance / totalLPBalance * 100) : 0;
-      
-      let lpWarning = false;
-      let lpWarningReason = null;
-      
-      if (lockedPercentage >= 80) {
-        // Safe: majority locked
-        lpWarning = false;
-      } else if (lockedPercentage > 0 && topHolderPct < 10) {
-        // Safe: some locked + distributed
-        lpWarning = false;
-      } else if (lockedPercentage === 0) {
-        // Risky: nothing locked
-        lpWarning = true;
-        lpWarningReason = `LP tidak di-lock/burn (top holder: ${topHolderPct.toFixed(1)}%)`;
-      } else {
-        // Moderate risk: partially locked but not enough
-        lpWarning = true;
-        lpWarningReason = `Hanya ${lockedPercentage.toFixed(1)}% LP ter-lock (top holder: ${topHolderPct.toFixed(1)}%)`;
-      }
-      
-      return {
-        lpLocked: lockedPercentage > 0,
-        lockedPercentage: lockedPercentage.toFixed(1),
-        lpHolderCount: lpHolders.length,
-        lpWarning,
-        lpWarningReason
-      };
-      
-    } catch (err) {
-      console.error(`Birdeye token_security error untuk ${address}:`, err.message);
-      return { lpLocked: null, lpWarning: true, lpWarningReason: `Birdeye API error: ${err.message}` };
-    }
-  });
-}
+// REMOVED: getBirdeyeTokenSecurity() - Always failed (0% success rate)
+// Replaced by: lpBurnedByGraduation detection (PumpPortal graduation event)
 
 // ==================== BIRDEYE: jumlah holder (opsional) ====================
 async function getHolderCount(address) {
@@ -583,50 +504,8 @@ async function getHolderCount(address) {
 }
 
 // ==================== SOLANA TRACKER: persentase bundle buys ====================
-async function getBundlePercentage(address, retryCount = 0) {
-  if (!SOLANATRACKER_API_KEY) {
-    console.log(`Bundle check dilewati (${address}): SOLANATRACKER_API_KEY belum diisi.`);
-    return null;
-  }
-  
-  const MAX_RETRIES = 3;
-  const RETRY_DELAY_MS = 2000;
-  
-  try {
-    const url = `https://data.solanatracker.io/tokens/${address}`;
-    const res = await fetch(url, { headers: { 'x-api-key': SOLANATRACKER_API_KEY } });
-    
-    if (!res.ok) {
-      // Retry untuk HTTP error (429 rate limit, 5xx server error, dll)
-      if (retryCount < MAX_RETRIES && (res.status === 429 || res.status >= 500)) {
-        console.log(`Bundle check gagal (${address}): HTTP ${res.status}, retry ${retryCount + 1}/${MAX_RETRIES} dalam ${RETRY_DELAY_MS}ms...`);
-        await sleep(RETRY_DELAY_MS * (retryCount + 1)); // exponential backoff
-        return getBundlePercentage(address, retryCount + 1);
-      }
-      console.log(`Bundle check gagal (${address}): HTTP ${res.status}, tidak ada retry lagi.`);
-      return null;
-    }
-    
-    const json = await res.json();
-    const pct = json?.risk?.bundlers?.totalPercentage ?? null;
-    
-    if (pct == null) {
-      console.log(`Bundle check (${address}): field bundlers.totalPercentage tidak ditemukan di respons Solana Tracker.`);
-    } else {
-      console.log(`Bundle check (${address}): ${pct}%${retryCount > 0 ? ` (berhasil setelah ${retryCount} retry)` : ''}.`);
-    }
-    return pct;
-  } catch (err) {
-    // Retry untuk network error
-    if (retryCount < MAX_RETRIES) {
-      console.log(`Bundle check error (${address}): ${err.message}, retry ${retryCount + 1}/${MAX_RETRIES} dalam ${RETRY_DELAY_MS}ms...`);
-      await sleep(RETRY_DELAY_MS * (retryCount + 1));
-      return getBundlePercentage(address, retryCount + 1);
-    }
-    console.log(`Bundle check error (${address}): ${err.message}, tidak ada retry lagi.`);
-    return null;
-  }
-}
+// REMOVED: getBundlePercentage() - Always failed (0/3 success rate from 4 signals)
+// Replaced by: Helius Bundle Check (blockchain-level, more accurate)
 
 // ==================== SUMBER DISCOVERY 1: BIRDEYE ====================
 async function getBirdeyeCandidates() {
@@ -642,41 +521,10 @@ async function getBirdeyeCandidates() {
 }
 
 // ==================== SUMBER DISCOVERY 3: DEXSCREENER TOKEN PROFILES (TERCEPAT!) ====================
-async function getDexScreenerLatestPairs() {
-  try {
-    // Get latest token profiles (tokens being promoted/updated - very fresh!)
-    const url = 'https://api.dexscreener.com/token-profiles/latest/v1';
-    const res = await fetch(url, { headers: { accept: 'application/json' } });
-    
-    if (res.status === 429) {
-      console.error(`DexScreener rate limit (429), skip siklus ini`);
-      return [];
-    }
-    
-    if (!res.ok) {
-      console.error(`DexScreener token profiles error ${res.status}`);
-      return [];
-    }
-    
-    const profiles = await res.json();
-    if (!Array.isArray(profiles)) return [];
-    
-    // Extract Solana token addresses from profiles
-    const solanaTokens = profiles
-      .filter(p => p.chainId === 'solana' && p.tokenAddress)
-      .map(p => p.tokenAddress);
-    
-    if (solanaTokens.length > 0) {
-      console.log(`✅ DexScreener discovery: ${solanaTokens.length} token profile(s) baru`);
-    }
-    
-    return [...new Set(solanaTokens)]; // dedupe
-    
-  } catch (err) {
-    console.error(`DexScreener token profiles error: ${err.message}`);
-    return [];
-  }
-}
+// ==================== SUMBER DISCOVERY: DEXSCREENER ====================
+// REMOVED: getDexScreenerLatestPairs() - Redundant + rate limit 429
+// Already have: Multi-Helius (0-5s), PumpPortal (0-10s), Gecko (15min)
+// DexScreener 10min interval was too slow and caused rate limit errors
 
 // ==================== SUMBER DISCOVERY 2: GECKOTERMINAL ====================
 async function fetchGeckoPage(page) {
@@ -727,8 +575,7 @@ async function resolvePoolToTokenAddress(pairAddress) {
 function rebuildWatchlist() {
   const addresses = Array.from(new Set([
     ...state.birdeyeAddresses, 
-    ...state.geckoAddresses,
-    ...(state.dexscreenerAddresses || [])
+    ...state.geckoAddresses
   ]));
   const newPrices = {};
   for (const addr of addresses) {
@@ -737,7 +584,7 @@ function rebuildWatchlist() {
   state.watchlist = addresses;
   state.prices = newPrices;
   saveState(state);
-  console.log(`Watchlist gabungan diperbarui: ${addresses.length} koin unik (Birdeye: ${state.birdeyeAddresses.length}, Gecko: ${state.geckoAddresses.length}, DexScreener: ${(state.dexscreenerAddresses || []).length}).`);
+  console.log(`Watchlist gabungan diperbarui: ${addresses.length} koin unik (Birdeye: ${state.birdeyeAddresses.length}, Gecko: ${state.geckoAddresses.length}).`);
 }
 
 async function refreshBirdeyeWatchlist() {
@@ -769,17 +616,8 @@ async function refreshGeckoWatchlist() {
   rebuildWatchlist();
 }
 
-async function refreshDexScreenerWatchlist() {
-  console.log(`\n[${new Date().toISOString()}] Refresh watchlist dari DexScreener (latest pairs)...`);
-  try {
-    const addrs = await getDexScreenerLatestPairs();
-    state.dexscreenerAddresses = addrs;
-    console.log(`DexScreener: ${addrs.length} token baru.`);
-  } catch (err) {
-    console.error('Gagal ambil latest pairs dari DexScreener (dilewati):', err.message);
-  }
-  rebuildWatchlist();
-}
+// REMOVED: refreshDexScreenerWatchlist() - Redundant discovery layer
+// Using: Multi-Helius + PumpPortal + Gecko only
 
 // ==================== TAHAP 1: snapshot harga (gate STABIL saja) ====================
 async function getTokenSnapshot(address) {
@@ -848,27 +686,11 @@ async function checkQualityGates(snapshot) {
     // LP check: Skip Birdeye for graduated tokens (LP auto-burned by Pump.fun)
     if (cached.isGraduated && cached.lpBurned) {
       // Graduated token: LP already burned to incinerator
-      state.prices[address].lpWarning = false;
-      state.prices[address].lpWarningReason = null;
-      state.prices[address].lpLocked = true;
-      state.prices[address].lockedPercentage = '100.0';
       state.prices[address].lpBurnedByGraduation = true;
       console.log(`✅ LP check skipped for graduated token ${address}: LP auto-burned`);
-    } else {
-      // Non-graduated: Use Birdeye token_security (old method)
-      const birdeyeSecurity = await getBirdeyeTokenSecurity(address);
-      if (birdeyeSecurity.lpWarning !== undefined) {
-        // Birdeye data available - use it for LP lock status
-        state.prices[address].lpWarning = birdeyeSecurity.lpWarning;
-        state.prices[address].lpWarningReason = birdeyeSecurity.lpWarningReason;
-        state.prices[address].lpLocked = birdeyeSecurity.lpLocked;
-        state.prices[address].lockedPercentage = birdeyeSecurity.lockedPercentage;
-      } else {
-        // Fallback to RugCheck LP data if Birdeye unavailable
-        state.prices[address].lpWarning = rc.lpWarning || false;
-        state.prices[address].lpWarningReason = rc.lpWarningReason || null;
-      }
     }
+    // Note: LP check from Birdeye removed (0% success rate)
+    // Only graduation-based LP detection is reliable
 
     if (!rc.safe) return { pass: false, reason: `RugCheck: ${rc.reason}` };
   } else if (cached.rugcheckSafe === false) {
@@ -886,13 +708,8 @@ async function checkQualityGates(snapshot) {
     }
   }
 
-  // Bundle buys % — biasanya sudah dicek sejak token armed (lihat processOneTokenInner),
-  // tapi jaga-jaga kalau belum (misal dump terjadi di siklus armed pertama), cek di sini juga.
-  // Sama seperti di atas: kalau gagal, TIDAK disimpan permanen sebagai null.
-  if (state.prices[address].bundlePercentage === undefined) {
-    const pct = await getBundlePercentage(address);
-    if (pct != null) state.prices[address].bundlePercentage = pct;
-  }
+  // Bundle check - removed SolanaTracker (always failed)
+  // Use Helius bundle check instead (set via analyzeHeliusBundle)
   const bundlePercentage = state.prices[address].bundlePercentage;
   const bundleWarning = bundlePercentage != null && bundlePercentage > BUNDLE_WARNING_PCT;
   
@@ -908,10 +725,7 @@ async function checkQualityGates(snapshot) {
       bundleWarning, bundlePercentage, bundleDataMissing,
       heliusBundleCheck: state.prices[address].heliusBundleCheck, // pending/clean/detected/failed
       heliusBundleData: state.prices[address].heliusBundleData, // Helius analysis result
-      lpWarning: state.prices[address].lpWarning || false,
-      lpWarningReason: state.prices[address].lpWarningReason || null,
-      lpLocked: state.prices[address].lpLocked, // Birdeye: true if any LP locked
-      lockedPercentage: state.prices[address].lockedPercentage, // Birdeye: % locked
+      lpBurnedByGraduation: state.prices[address].lpBurnedByGraduation || false,
     },
   };
 }
@@ -976,12 +790,8 @@ async function processOneTokenInner(addr) {
 
   // Begitu armed (kriteria mana pun), langsung cek bundle % kalau belum pernah — supaya
   // token berisiko tinggi bisa segera masuk jalur super cepat, bukan nunggu momen dump.
-  // PENTING: cuma disimpan kalau BERHASIL dapat angka — kalau gagal (network/API error),
-  // TIDAK disimpan sebagai null permanen, supaya dicoba lagi di siklus berikutnya.
-  if ((sudahMelambungTier1 || sudahMelambungTier2) && entry.bundlePercentage === undefined) {
-    const pct = await getBundlePercentage(addr);
-    if (pct != null) entry.bundlePercentage = pct;
-  }
+  // REMOVED: SolanaTracker bundle check (always failed)
+  // Using: Helius bundle check instead (analyzeHeliusBundle)
 
   let dumpThreshold = null;
   let tierLabel = null;
@@ -1901,19 +1711,16 @@ function checkCriteria1And2RealTime(mint, currentPrice, tokenSymbol) {
   await checkHeliusHealth();
   
   console.log('🔥 HYBRID DISCOVERY SYSTEM ACTIVE:');
-  console.log('  - WebSocket (Multi-Helius): 0-3 sec (3 connections × 5 DEXs)');
+  console.log('  - WebSocket (Multi-Helius): 0-5 sec (3 connections × 5 DEXs)');
   console.log('  - WebSocket (PumpPortal): 0-10 sec (new token creation)');
   console.log('  - Polling (Birdeye): 45 min (top volume)');
-  console.log(`  - Polling (Gecko): ${(GECKO_DISCOVER_INTERVAL_MS / 1000).toFixed(0)} sec (trending backup)`);
-  console.log('  - Polling (DexScreener): 10 min (backup)\n');
+  console.log(`  - Polling (Gecko): ${(GECKO_DISCOVER_INTERVAL_MS / 1000).toFixed(0)} sec (trending backup)\n`);
   
   await refreshBirdeyeWatchlist();
   await refreshGeckoWatchlist();
-  await refreshDexScreenerWatchlist();
   await checkPricesOnce();
   setInterval(refreshBirdeyeWatchlist, BIRDEYE_DISCOVER_INTERVAL_MS);
   setInterval(refreshGeckoWatchlist, GECKO_DISCOVER_INTERVAL_MS);
-  setInterval(refreshDexScreenerWatchlist, 10 * 60 * 1000); // Every 10 minutes (reduced from 5min to avoid 429)
   setInterval(checkPricesOnce, CHECK_INTERVAL_MS);
   setInterval(fastCheckArmedTokens, FAST_CHECK_INTERVAL_MS);
   setInterval(highRiskCheckArmedTokens, HIGH_RISK_FAST_CHECK_INTERVAL_MS);
