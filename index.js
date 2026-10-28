@@ -230,6 +230,13 @@ function computeMomentum(recentPrices) {
 
 // ==================== TELEGRAM ====================
 async function sendTelegramAlert({ symbol, name, address, price, volume1h, marketCap, liquidityUsd, pairUrl, dexId, momentum, tierLabel, clusterWarning, bundleWarning, bundlePercentage, bundleDataMissing, lpBurnedByGraduation, heliusBundleCheck, heliusBundleData }) {
+  // Increment signal counter for /status command
+  try {
+    const { incrementSignalCount } = require('./telegram-commands.js');
+    incrementSignalCount();
+  } catch (err) {
+    // Ignore if module not loaded yet
+  }
   const mcText = marketCap != null ? `$${Number(marketCap).toLocaleString('en-US')}` : 'Data tidak tersedia';
   const risky = liquidityUsd == null || liquidityUsd < LIQUIDITY_MIN_USD;
   const riskLine = risky ? `\n⚠️ RISIKO LIKUIDITAS TINGGI` : '';
@@ -1724,4 +1731,10 @@ function checkCriteria1And2RealTime(mint, currentPrice, tokenSymbol) {
   setInterval(checkPricesOnce, CHECK_INTERVAL_MS);
   setInterval(fastCheckArmedTokens, FAST_CHECK_INTERVAL_MS);
   setInterval(highRiskCheckArmedTokens, HIGH_RISK_FAST_CHECK_INTERVAL_MS);
+  
+  // Start Telegram command listener (Phase 1: Read-only)
+  const { startCommandListener } = require('./telegram-commands.js');
+  startCommandListener(BOT_TOKEN, state).catch(err => {
+    console.error('❌ Command listener crashed:', err);
+  });
 })();
