@@ -50,7 +50,7 @@ function serializeEnv(env) {
   const lines = [];
   
   // Add header comment
-  lines.push('# Eyescan2 v39 Environment Variables');
+  lines.push('# Eyescan2 v40 Environment Variables');
   lines.push(`# Last updated: ${new Date().toISOString()}`);
   lines.push('');
   

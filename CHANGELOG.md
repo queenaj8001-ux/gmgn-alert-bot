@@ -1,5 +1,38 @@
 # Eyescan2 Changelog
 
+## v40 (2026-10-29) - Bugfix: Signal Counters + /logs + Cleanup
+
+### 🐛 Bug Fixes
+- **Signal Counter Persistence** - Counter now persists across bot restarts (saved in state.json, not in-memory)
+- **/logs Command** - Fixed "journalctl not found" error (use full path `/usr/bin/journalctl` for sh compatibility)
+
+### ✨ Features  
+- **Daily Signal Counter** - Track signals per day + lifetime total (auto-reset at midnight UTC)
+  - `signalsSentToday` - Daily counter (resets 00:00 UTC)
+  - `signalsSent` - Lifetime total (never resets)
+  - `lastResetDate` - Last reset date tracking
+
+### 🧹 Cleanup
+- **Chart Generation** - Removed unused `generate_chart.py` (matplotlib not installed, 218 lines deleted)
+- **Old Log Files** - Cleaned `bot.log` and backups (457 KB freed)
+- **Configuration** - Verified all filter configs present in .env
+- **Health Check** - Comprehensive system verification (0 errors, production ready)
+
+### 📊 System Health
+- Memory: 52.8 MB (healthy, <200 MB target)
+- WebSocket: 23 discoveries/min (active)
+- Telegram: 8 commands working
+- Detection: 66 tokens tracked, 1 armed
+- Errors: 0
+
+### 📦 Commits (4 total)
+- `fde4dca` - fix: Signal counter persists across bot restarts
+- `f715f95` - feat: Add daily signal counter (today + total)
+- `50cfce3` - chore: Remove unused chart generation feature
+- `a7ab0b5` - fix: /logs command - use full path for journalctl
+
+---
+
 ## v39 (2026-10-29) - Telegram Phase 2: Config Management
 
 ### 🎉 Major Features
