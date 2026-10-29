@@ -1,10 +1,13 @@
-// ==================== TELEGRAM COMMAND HANDLER (Phase 1: Read-Only) ====================
+// ==================== TELEGRAM COMMAND HANDLER (Phase 1 + Phase 2) ====================
 // Created: 2026-10-28 (Phase 1: /help, /status, /getconfig, /logs)
 // Updated: 2026-10-29 (Added autocomplete via setMyCommands)
-// Safe: No writes to config, no restarts
+// Updated: 2026-10-29 (Phase 2: /setprice with atomic writes + reload)
+// Safe: Atomic writes, backups, confirmation required, validation
 
 const fs = require('fs');
 const path = require('path');
+const { validatePriceThreshold, previewConfigChange, getCurrentConfig } = require('./config-validator.js');
+const { atomicWriteEnv, reloadConfigSafe, verifyUpdate, listBackups } = require('./config-writer.js');
 
 // Authorization: Only Okta can use commands
 const AUTHORIZED_USER_ID = parseInt(process.env.TELEGRAM_CHAT_ID || '0');
@@ -19,17 +22,25 @@ const botStats = {
   commandsReceived: 0,
 };
 
+// Pending confirmations (user waiting for "yes/no" reply)
+// Format: { userId: { type, data, expiresAt, messageId } }
+const pendingConfirmations = {};
+
+// Command lock (prevent concurrent writes)
+let commandLock = false;
+
 // Command definitions for autocomplete
 const COMMAND_LIST = [
   { command: 'help', description: 'Show available commands' },
   { command: 'status', description: 'Bot health & stats' },
   { command: 'getconfig', description: 'Show current config' },
   { command: 'logs', description: 'Show recent logs (default 20 lines)' },
-  // Phase 2 (not yet active, but shown for future use):
-  // { command: 'setprice', description: 'Update price thresholds' },
+  { command: 'setprice', description: 'Update price thresholds (tier value)' },
+  { command: 'reload', description: 'Reload config from disk' },
+  { command: 'undo', description: 'Rollback to previous backup' },
+  // Phase 2 (coming soon):
   // { command: 'setfilter', description: 'Update filters' },
   // { command: 'restart', description: 'Restart bot' },
-  // { command: 'reload', description: 'Reload config from disk' },
 ];
 
 // Increment signal counter (call this in sendTelegramAlert)
@@ -105,15 +116,19 @@ function commandHelp() {
 
 <b>Available Commands:</b>
 
-/help - Show this message
-/status - Bot health & stats
-/getconfig - Show current config
-/logs [lines] - Show recent logs (default 20)
+📖 /help - Show this message
+📊 /status - Bot health & stats
+⚙️ /getconfig - Show current config
+📜 /logs [lines] - Show recent logs (default 20)
+
+<b>Config Management (Phase 2):</b>
+💰 /setprice &lt;tier&gt; &lt;value&gt; - Update price threshold
+🔄 /reload - Reload config without restart
+↩️ /undo - Show backup info
 
 <b>Authorization:</b> Only authorized users can use commands.
 
-<b>Phase 2 (Coming soon):</b>
-/setprice - Update price thresholds
+<b>Coming soon:</b>
 /setfilter - Update filters
 /restart - Restart bot
 
@@ -196,6 +211,225 @@ function commandLogs(lines = 20) {
   }
 }
 
+// Command: /setprice <tier> <value>
+// Example: /setprice tier1_high 0.0005
+async function commandSetPrice(userId, args) {
+  if (args.length !== 2) {
+    return `❌ <b>Usage:</b> /setprice &lt;tier&gt; &lt;value&gt;
+
+<b>Valid tiers:</b>
+• tier1_high - Tier 1 high threshold
+• tier1_low - Tier 1 low threshold
+• tier2_high - Tier 2 high threshold
+• tier2_low - Tier 2 low threshold
+
+<b>Example:</b>
+<code>/setprice tier1_high 0.0005</code>`;
+  }
+
+  const tier = args[0].toLowerCase();
+  const value = parseFloat(args[1]);
+
+  // Validate tier name
+  const validTiers = ['tier1_high', 'tier1_low', 'tier2_high', 'tier2_low'];
+  if (!validTiers.includes(tier)) {
+    return `❌ Invalid tier: ${args[0]}
+
+<b>Valid tiers:</b> ${validTiers.join(', ')}`;
+  }
+
+  // Validate value is number
+  if (isNaN(value)) {
+    return `❌ Invalid value: ${args[1]} (must be a number)`;
+  }
+
+  // Get current config
+  const currentConfig = getCurrentConfig();
+
+  // Validate with config-validator
+  const validation = validatePriceThreshold(tier, value, currentConfig);
+
+  if (!validation.valid) {
+    return `❌ <b>Validation failed:</b>
+
+${validation.error}
+
+<b>Current config:</b>
+${validation.context || 'N/A'}`;
+  }
+
+  // Generate preview
+  const preview = previewConfigChange('price', tier, value, currentConfig);
+
+  // Store pending confirmation
+  pendingConfirmations[userId] = {
+    type: 'setprice',
+    data: { tier, value },
+    expiresAt: Date.now() + 60000, // 60s timeout
+    preview,
+  };
+
+  return `⚠️ <b>Confirm Price Update</b>
+
+${preview}
+
+<b>Reply "yes" to confirm, "no" to cancel</b>
+<i>(Auto-cancel in 60 seconds)</i>`;
+}
+
+// Command: /reload
+async function commandReload() {
+  try {
+    const result = reloadConfigSafe();
+    
+    if (result.success) {
+      return `✅ <b>Config reloaded successfully!</b>
+
+Method: ${result.method}
+No restart needed.
+
+Use /getconfig to verify.`;
+    } else {
+      return `❌ <b>Reload failed:</b> ${result.error}`;
+    }
+  } catch (err) {
+    return `❌ <b>Reload error:</b> ${err.message}`;
+  }
+}
+
+// Command: /undo
+async function commandUndo() {
+  try {
+    const backups = listBackups();
+    
+    if (backups.length === 0) {
+      return `❌ No backups available`;
+    }
+    
+    const latest = backups[0];
+    const age = Math.floor(latest.age / 1000);
+    const ageStr = formatUptime(age);
+    
+    return `📦 <b>Latest Backup</b>
+
+Created: ${ageStr} ago
+Size: ${latest.size} bytes
+
+<b>Available backups:</b> ${backups.length}
+
+<i>To restore: Use /setprice to make a change, then undo if needed.</i>
+<i>(Auto-rollback on failed reload)</i>`;
+  } catch (err) {
+    return `❌ Error: ${err.message}`;
+  }
+}
+
+// Process confirmation reply (yes/no)
+async function processConfirmation(userId, text) {
+  const pending = pendingConfirmations[userId];
+  
+  if (!pending) {
+    return null; // No pending confirmation
+  }
+  
+  // Check expiration
+  if (Date.now() > pending.expiresAt) {
+    delete pendingConfirmations[userId];
+    return `⏰ <b>Confirmation expired</b> (timeout after 60s)`;
+  }
+  
+  const reply = text.toLowerCase().trim();
+  
+  // Cancel
+  if (reply === 'no' || reply === 'cancel') {
+    delete pendingConfirmations[userId];
+    return `❌ <b>Cancelled</b> - No changes made`;
+  }
+  
+  // Confirm
+  if (reply === 'yes' || reply === 'confirm') {
+    delete pendingConfirmations[userId];
+    
+    if (pending.type === 'setprice') {
+      return await executeSetPrice(pending.data);
+    }
+    
+    return `❌ Unknown confirmation type: ${pending.type}`;
+  }
+  
+  // Invalid reply
+  return `❓ Please reply "yes" to confirm or "no" to cancel`;
+}
+
+// Execute setprice after confirmation
+async function executeSetPrice(data) {
+  const { tier, value } = data;
+  
+  try {
+    // Map tier to env var name
+    const tierMap = {
+      tier1_high: 'PRICE_HIGH',
+      tier1_low: 'PRICE_LOW',
+      tier2_high: 'PRICE_HIGH_2',
+      tier2_low: 'PRICE_LOW_2',
+    };
+    
+    const envKey = tierMap[tier];
+    const oldValue = process.env[envKey];
+    
+    // Atomic write
+    const writeResult = atomicWriteEnv({ [envKey]: String(value) });
+    
+    // Reload config
+    const reloadResult = reloadConfigSafe();
+    
+    if (!reloadResult.success) {
+      return `❌ <b>Reload failed!</b>
+
+File written but reload error: ${reloadResult.error}
+
+<b>Manual action needed:</b>
+1. Check bot logs
+2. Try /reload command
+3. Or restart bot if needed
+
+Backup: ${writeResult.backup}`;
+    }
+    
+    // Verify update
+    const verified = verifyUpdate(envKey, value);
+    
+    if (!verified) {
+      return `⚠️ <b>Verification failed!</b>
+
+File written and reloaded, but value not updated.
+Check bot logs for details.
+
+Backup: ${writeResult.backup}`;
+    }
+    
+    return `✅ <b>Price updated successfully!</b>
+
+<b>Changed:</b> ${tier}
+<b>Old:</b> $${oldValue}
+<b>New:</b> $${value}
+
+<b>Status:</b>
+✅ File written (atomic)
+✅ Config reloaded (no restart)
+✅ Value verified
+
+<b>Backup:</b> ${path.basename(writeResult.backup)}
+
+Use /getconfig to verify all thresholds.`;
+    
+  } catch (err) {
+    return `❌ <b>Execute failed:</b> ${err.message}
+
+Check bot logs for details.`;
+  }
+}
+
 // Format uptime
 function formatUptime(seconds) {
   const d = Math.floor(seconds / 86400);
@@ -232,8 +466,25 @@ async function processCommand(botToken, msg, state) {
   try {
     const parts = text.split(' ');
     const command = parts[0].toLowerCase();
+    const args = parts.slice(1);
 
     let reply = '';
+
+    // First check if this is a confirmation reply (yes/no)
+    if (!text.startsWith('/')) {
+      const confirmReply = await processConfirmation(userId, text);
+      if (confirmReply) {
+        await sendTelegramReply(botToken, chatId, confirmReply, messageId);
+        console.log(`✅ Confirmation processed: ${text}`);
+        return;
+      }
+    }
+
+    // Check command lock (prevent concurrent writes)
+    if (commandLock && ['/setprice', '/setfilter', '/restart'].includes(command)) {
+      await sendTelegramReply(botToken, chatId, '⏳ Another command is running, please wait...', messageId);
+      return;
+    }
 
     switch (command) {
       case '/help':
@@ -256,6 +507,23 @@ async function processCommand(botToken, msg, state) {
         } else {
           reply = commandLogs(lines);
         }
+        break;
+
+      case '/setprice':
+        commandLock = true;
+        try {
+          reply = await commandSetPrice(userId, args);
+        } finally {
+          commandLock = false;
+        }
+        break;
+
+      case '/reload':
+        reply = await commandReload();
+        break;
+
+      case '/undo':
+        reply = await commandUndo();
         break;
 
       default:
