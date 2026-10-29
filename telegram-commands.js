@@ -234,9 +234,15 @@ async function processCommand(botToken, msg, state) {
 async function startCommandListener(botToken, state) {
   console.log('🤖 Telegram command listener started (polling mode)');
   console.log(`✅ Authorized user ID: ${AUTHORIZED_USER_ID}`);
+  
+  let pollCount = 0;
 
   while (true) {
     try {
+      pollCount++;
+      if (pollCount % 10 === 1) {
+        console.log(`🤖 Polling... (count: ${pollCount}, last update ID: ${lastUpdateId})`);
+      }
       const data = await getUpdates(botToken, lastUpdateId + 1, 30);
       
       if (data.ok && data.result.length > 0) {
