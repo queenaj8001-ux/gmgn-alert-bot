@@ -5,3 +5,12 @@ node_modules/
 __pycache__/
 *.pyc
 .coverage
+.env
+.env.local
+.env-backups/
+state.json
+bot.log
+bot.log.*
+bot.pid
+*.log
+.DS_Store
