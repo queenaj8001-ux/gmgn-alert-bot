@@ -23,8 +23,11 @@ const botStats = {
 };
 
 // Pending confirmations (user waiting for "yes/no" reply)
-// Format: { userId: { type, data, expiresAt, messageId } }
+// Format: { userId: { type, data, expiresAt, messageId, waitingForValue } }
 const pendingConfirmations = {};
+
+// Processed callback query IDs (prevent duplicate processing)
+const processedCallbacks = new Set();
 
 // Command lock (prevent concurrent writes)
 let commandLock = false;
@@ -62,7 +65,7 @@ async function getUpdates(botToken, offset = 0, timeout = 30) {
 }
 
 // Send text reply
-async function sendTelegramReply(botToken, chatId, text, replyToMessageId = null) {
+async function sendTelegramReply(botToken, chatId, text, replyToMessageId = null, keyboard = null) {
   try {
     const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
     const body = {
@@ -71,6 +74,12 @@ async function sendTelegramReply(botToken, chatId, text, replyToMessageId = null
       parse_mode: 'HTML',
       reply_to_message_id: replyToMessageId,
     };
+    
+    // Add keyboard if provided
+    if (keyboard) {
+      body.reply_markup = keyboard;
+    }
+    
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -81,6 +90,73 @@ async function sendTelegramReply(botToken, chatId, text, replyToMessageId = null
     console.error('❌ sendReply error:', err.message);
     return false;
   }
+}
+
+// Answer callback query (remove loading state from button)
+async function answerCallbackQuery(botToken, callbackQueryId, text = null) {
+  try {
+    const url = `https://api.telegram.org/bot${botToken}/answerCallbackQuery`;
+    const body = {
+      callback_query_id: callbackQueryId,
+    };
+    
+    if (text) {
+      body.text = text;
+      body.show_alert = false; // Toast notification
+    }
+    
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return res.ok;
+  } catch (err) {
+    console.error('❌ answerCallbackQuery error:', err.message);
+    return false;
+  }
+}
+
+// Create inline keyboard for /setprice command
+function createSetPriceKeyboard() {
+  const currentConfig = getCurrentConfig();
+  
+  return {
+    inline_keyboard: [
+      [
+        { 
+          text: `💰 Tier 1 High ($${currentConfig.PRICE_HIGH || 'N/A'})`, 
+          callback_data: 'sp_t1h' 
+        },
+        { 
+          text: `📉 Tier 1 Low ($${currentConfig.PRICE_LOW || 'N/A'})`, 
+          callback_data: 'sp_t1l' 
+        },
+      ],
+      [
+        { 
+          text: `💵 Tier 2 High ($${currentConfig.PRICE_HIGH_2 || 'N/A'})`, 
+          callback_data: 'sp_t2h' 
+        },
+        { 
+          text: `📊 Tier 2 Low ($${currentConfig.PRICE_LOW_2 || 'N/A'})`, 
+          callback_data: 'sp_t2l' 
+        },
+      ],
+    ],
+  };
+}
+
+// Create Yes/No confirmation keyboard
+function createConfirmationKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: '✅ Yes, Update!', callback_data: 'confirm_yes' },
+        { text: '❌ Cancel', callback_data: 'confirm_no' },
+      ],
+    ],
+  };
 }
 
 // Set bot commands for autocomplete (shows popup when user types "/")
@@ -213,7 +289,24 @@ function commandLogs(lines = 20) {
 
 // Command: /setprice <tier> <value>
 // Example: /setprice tier1_high 0.0005
+// OR: /setprice (shows keyboard)
 async function commandSetPrice(userId, args) {
+  // No args = show keyboard
+  if (args.length === 0) {
+    const keyboard = createSetPriceKeyboard();
+    return {
+      text: `⚙️ <b>Update Price Threshold</b>
+
+<b>Current thresholds:</b>
+• Tier 1: High → Low signal
+• Tier 2: High → Low signal
+
+<b>Select threshold to update:</b>`,
+      keyboard,
+    };
+  }
+  
+  // Legacy mode: /setprice tier1_high 0.0005
   if (args.length !== 2) {
     return `❌ <b>Usage:</b> /setprice &lt;tier&gt; &lt;value&gt;
 
@@ -224,7 +317,9 @@ async function commandSetPrice(userId, args) {
 • tier2_low - Tier 2 low threshold
 
 <b>Example:</b>
-<code>/setprice tier1_high 0.0005</code>`;
+<code>/setprice tier1_high 0.0005</code>
+
+<b>Or use /setprice without args for button interface.</b>`;
   }
 
   const tier = args[0].toLowerCase();
@@ -269,12 +364,16 @@ ${validation.context || 'N/A'}`;
     preview,
   };
 
-  return `⚠️ <b>Confirm Price Update</b>
+  const keyboard = createConfirmationKeyboard();
+
+  return {
+    text: `⚠️ <b>Confirm Price Update</b>
 
 ${preview}
 
-<b>Reply "yes" to confirm, "no" to cancel</b>
-<i>(Auto-cancel in 60 seconds)</i>`;
+<b>Click button to confirm or cancel:</b>`,
+    keyboard,
+  };
 }
 
 // Command: /reload
@@ -446,6 +545,127 @@ function formatUptime(seconds) {
   return parts.join(' ');
 }
 
+// Handle callback query (button clicks)
+async function handleCallbackQuery(botToken, callbackQuery, state) {
+  const queryId = callbackQuery.id;
+  const userId = callbackQuery.from.id;
+  const data = callbackQuery.data;
+  const chatId = callbackQuery.message.chat.id;
+  const messageId = callbackQuery.message.message_id;
+  
+  // Check if already processed (prevent duplicates)
+  if (processedCallbacks.has(queryId)) {
+    console.log(`⏩ Skipping duplicate callback: ${queryId}`);
+    return;
+  }
+  processedCallbacks.add(queryId);
+  
+  // Cleanup old callback IDs (keep last 100)
+  if (processedCallbacks.size > 100) {
+    const arr = Array.from(processedCallbacks);
+    processedCallbacks.clear();
+    arr.slice(-50).forEach(id => processedCallbacks.add(id));
+  }
+  
+  // Authorization check
+  if (userId !== AUTHORIZED_USER_ID) {
+    await answerCallbackQuery(botToken, queryId, '⛔ Unauthorized');
+    console.log(`⛔ Unauthorized callback from user ${userId}`);
+    return;
+  }
+  
+  console.log(`🔘 Callback received: ${data} from user ${userId}`);
+  
+  try {
+    // Parse callback data
+    if (data.startsWith('sp_')) {
+      // Setprice tier selection: sp_t1h, sp_t1l, sp_t2h, sp_t2l
+      const tierMap = {
+        sp_t1h: 'tier1_high',
+        sp_t1l: 'tier1_low',
+        sp_t2h: 'tier2_high',
+        sp_t2l: 'tier2_low',
+      };
+      
+      const tier = tierMap[data];
+      if (!tier) {
+        await answerCallbackQuery(botToken, queryId, '❌ Invalid tier');
+        return;
+      }
+      
+      const currentConfig = getCurrentConfig();
+      const tierEnvMap = {
+        tier1_high: 'PRICE_HIGH',
+        tier1_low: 'PRICE_LOW',
+        tier2_high: 'PRICE_HIGH_2',
+        tier2_low: 'PRICE_LOW_2',
+      };
+      const envKey = tierEnvMap[tier];
+      const currentValue = currentConfig[envKey];
+      
+      // Store "waiting for value" state
+      pendingConfirmations[userId] = {
+        type: 'setprice_waiting_value',
+        data: { tier },
+        expiresAt: Date.now() + 120000, // 2 min timeout
+      };
+      
+      await answerCallbackQuery(botToken, queryId);
+      await sendTelegramReply(
+        botToken,
+        chatId,
+        `💰 <b>Update ${tier.replace('_', ' ')}</b>
+
+<b>Current value:</b> $${currentValue}
+
+<b>Enter new value:</b>
+<i>Example: 0.0005</i>
+
+<i>(Timeout in 2 minutes)</i>`,
+        messageId
+      );
+      
+    } else if (data === 'confirm_yes') {
+      // Confirmation: Yes
+      const pending = pendingConfirmations[userId];
+      
+      if (!pending) {
+        await answerCallbackQuery(botToken, queryId, '❌ No pending action');
+        return;
+      }
+      
+      if (Date.now() > pending.expiresAt) {
+        delete pendingConfirmations[userId];
+        await answerCallbackQuery(botToken, queryId, '⏰ Expired');
+        await sendTelegramReply(botToken, chatId, '⏰ <b>Confirmation expired</b>', messageId);
+        return;
+      }
+      
+      delete pendingConfirmations[userId];
+      await answerCallbackQuery(botToken, queryId, '✅ Executing...');
+      
+      if (pending.type === 'setprice') {
+        const result = await executeSetPrice(pending.data);
+        await sendTelegramReply(botToken, chatId, result, messageId);
+      }
+      
+    } else if (data === 'confirm_no') {
+      // Confirmation: No
+      delete pendingConfirmations[userId];
+      await answerCallbackQuery(botToken, queryId, '❌ Cancelled');
+      await sendTelegramReply(botToken, chatId, '❌ <b>Cancelled</b> - No changes made', messageId);
+      
+    } else {
+      await answerCallbackQuery(botToken, queryId, '❓ Unknown action');
+    }
+    
+  } catch (err) {
+    console.error('❌ Callback handler error:', err);
+    await answerCallbackQuery(botToken, queryId, '❌ Error');
+    await sendTelegramReply(botToken, chatId, `❌ Error: ${err.message}`, messageId);
+  }
+}
+
 // Process one command message
 async function processCommand(botToken, msg, state) {
   const chatId = msg.chat.id;
@@ -469,8 +689,50 @@ async function processCommand(botToken, msg, state) {
     const args = parts.slice(1);
 
     let reply = '';
+    let keyboard = null;
 
-    // First check if this is a confirmation reply (yes/no)
+    // First check if user is waiting to enter a value (after button click)
+    const pending = pendingConfirmations[userId];
+    if (pending && pending.type === 'setprice_waiting_value' && !text.startsWith('/')) {
+      // User entered value after clicking tier button
+      const value = parseFloat(text.trim());
+      
+      if (isNaN(value)) {
+        await sendTelegramReply(botToken, chatId, `❌ Invalid number: ${text}\n\nPlease enter a valid number (e.g., 0.0005)`, messageId);
+        return;
+      }
+      
+      const { tier } = pending.data;
+      
+      // Validate
+      const currentConfig = getCurrentConfig();
+      const validation = validatePriceThreshold(tier, value, currentConfig);
+      
+      if (!validation.valid) {
+        await sendTelegramReply(botToken, chatId, `❌ <b>Validation failed:</b>\n\n${validation.error}\n\n<b>Current config:</b>\n${validation.context || 'N/A'}`, messageId);
+        return;
+      }
+      
+      // Generate preview
+      const preview = previewConfigChange('price', tier, value, currentConfig);
+      
+      // Update pending state to confirmation
+      pendingConfirmations[userId] = {
+        type: 'setprice',
+        data: { tier, value },
+        expiresAt: Date.now() + 60000, // 60s timeout
+        preview,
+      };
+      
+      keyboard = createConfirmationKeyboard();
+      reply = `⚠️ <b>Confirm Price Update</b>\n\n${preview}\n\n<b>Click button to confirm or cancel:</b>`;
+      
+      await sendTelegramReply(botToken, chatId, reply, messageId, keyboard);
+      console.log(`✅ Value validated, waiting for confirmation: ${tier} = ${value}`);
+      return;
+    }
+
+    // Next check if this is a yes/no text confirmation (legacy mode)
     if (!text.startsWith('/')) {
       const confirmReply = await processConfirmation(userId, text);
       if (confirmReply) {
@@ -512,7 +774,14 @@ async function processCommand(botToken, msg, state) {
       case '/setprice':
         commandLock = true;
         try {
-          reply = await commandSetPrice(userId, args);
+          const result = await commandSetPrice(userId, args);
+          if (typeof result === 'object' && result.text) {
+            // Result has keyboard
+            reply = result.text;
+            keyboard = result.keyboard;
+          } else {
+            reply = result;
+          }
         } finally {
           commandLock = false;
         }
@@ -530,7 +799,7 @@ async function processCommand(botToken, msg, state) {
         reply = `❌ Unknown command: ${command}\n\nUse /help to see available commands.`;
     }
 
-    await sendTelegramReply(botToken, chatId, reply, messageId);
+    await sendTelegramReply(botToken, chatId, reply, messageId, keyboard);
     console.log(`✅ Command processed: ${command}`);
 
   } catch (err) {
@@ -563,7 +832,18 @@ async function startCommandListener(botToken, state) {
         for (const update of data.result) {
           lastUpdateId = update.update_id;
           
+          // Handle callback query (button clicks)
+          if (update.callback_query) {
+            await handleCallbackQuery(botToken, update.callback_query, state);
+          }
+          
+          // Handle text messages (commands)
           if (update.message && update.message.text && update.message.text.startsWith('/')) {
+            await processCommand(botToken, update.message, state);
+          }
+          
+          // Handle text messages (value input or confirmation)
+          if (update.message && update.message.text && !update.message.text.startsWith('/')) {
             await processCommand(botToken, update.message, state);
           }
         }
