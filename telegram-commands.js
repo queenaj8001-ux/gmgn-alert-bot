@@ -1,5 +1,6 @@
 // ==================== TELEGRAM COMMAND HANDLER (Phase 1: Read-Only) ====================
 // Created: 2026-10-28 (Phase 1: /help, /status, /getconfig, /logs)
+// Updated: 2026-10-29 (Added autocomplete via setMyCommands)
 // Safe: No writes to config, no restarts
 
 const fs = require('fs');
@@ -17,6 +18,19 @@ const botStats = {
   signalsSent: 0,
   commandsReceived: 0,
 };
+
+// Command definitions for autocomplete
+const COMMAND_LIST = [
+  { command: 'help', description: 'Show available commands' },
+  { command: 'status', description: 'Bot health & stats' },
+  { command: 'getconfig', description: 'Show current config' },
+  { command: 'logs', description: 'Show recent logs (default 20 lines)' },
+  // Phase 2 (not yet active, but shown for future use):
+  // { command: 'setprice', description: 'Update price thresholds' },
+  // { command: 'setfilter', description: 'Update filters' },
+  // { command: 'restart', description: 'Restart bot' },
+  // { command: 'reload', description: 'Reload config from disk' },
+];
 
 // Increment signal counter (call this in sendTelegramAlert)
 function incrementSignalCount() {
@@ -54,6 +68,33 @@ async function sendTelegramReply(botToken, chatId, text, replyToMessageId = null
     return res.ok;
   } catch (err) {
     console.error('❌ sendReply error:', err.message);
+    return false;
+  }
+}
+
+// Set bot commands for autocomplete (shows popup when user types "/")
+async function setMyCommands(botToken) {
+  try {
+    const url = `https://api.telegram.org/bot${botToken}/setMyCommands`;
+    const body = {
+      commands: COMMAND_LIST,
+    };
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json();
+    
+    if (json.ok) {
+      console.log(`✅ Bot commands registered (${COMMAND_LIST.length} commands)`);
+      return true;
+    } else {
+      console.error('❌ Failed to set commands:', json.description);
+      return false;
+    }
+  } catch (err) {
+    console.error('❌ setMyCommands error:', err.message);
     return false;
   }
 }
@@ -235,6 +276,11 @@ async function startCommandListener(botToken, state) {
   console.log('🤖 Telegram command listener started (polling mode)');
   console.log(`✅ Authorized user ID: ${AUTHORIZED_USER_ID}`);
   
+  // Register commands for autocomplete (non-blocking)
+  setMyCommands(botToken).catch(err => {
+    console.error('⚠️ Failed to register commands, but listener continues:', err.message);
+  });
+  
   let pollCount = 0;
 
   while (true) {
@@ -265,4 +311,5 @@ module.exports = {
   startCommandListener,
   incrementSignalCount,
   botStats,
+  setMyCommands,
 };
