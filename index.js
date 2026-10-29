@@ -307,34 +307,6 @@ async function sendTelegramAlert({ symbol, name, address, price, volume1h, marke
     momentumLine + `\n` +
     (pairUrl ? `Chart: ${pairUrl}` : '');
 
-  // Generate chart (optional - only if generate_chart.py exists)
-  let chartPath = null;
-  try {
-    const { execSync } = require('child_process');
-    const fs = require('fs');
-    
-    // Check if chart generator exists
-    const chartScriptPath = __dirname + '/generate_chart.py';
-    if (fs.existsSync(chartScriptPath)) {
-      // Generate chart (1-hour candlestick)
-      const outputPath = `/tmp/chart_${address}.png`;
-      const chartTitle = `${symbol} - Price Chart (1h)`;
-      
-      execSync(
-        `python3 ${chartScriptPath} ${address} --hours 1 --output ${outputPath} --title "${chartTitle}"`,
-        { timeout: 10000 } // 10s timeout
-      );
-      
-      if (fs.existsSync(outputPath)) {
-        chartPath = outputPath;
-        console.log(`✅ Chart generated: ${chartPath}`);
-      }
-    }
-  } catch (chartError) {
-    console.log(`⚠️ Chart generation skipped: ${chartError.message}`);
-    // Continue without chart (not critical)
-  }
-
   const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
   
   // Kirim ke chat pribadi
@@ -345,35 +317,6 @@ async function sendTelegramAlert({ symbol, name, address, price, volume1h, marke
   });
   if (!res.ok) {
     console.error('Gagal kirim notifikasi Telegram (chat pribadi):', await res.text());
-  }
-  
-  // Send chart as photo (if generated)
-  if (chartPath) {
-    try {
-      const FormData = require('form-data');
-      const fs = require('fs');
-      const form = new FormData();
-      form.append('chat_id', CHAT_ID);
-      form.append('photo', fs.createReadStream(chartPath));
-      form.append('caption', `📊 ${symbol} - 1-hour candlestick chart`);
-      
-      const photoUrl = `https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`;
-      const photoRes = await fetch(photoUrl, {
-        method: 'POST',
-        body: form
-      });
-      
-      if (photoRes.ok) {
-        console.log(`✅ Chart sent to Telegram: ${symbol}`);
-      } else {
-        console.error('❌ Chart send failed:', await photoRes.text());
-      }
-      
-      // Cleanup temp file
-      fs.unlinkSync(chartPath);
-    } catch (photoError) {
-      console.error('❌ Chart send error:', photoError.message);
-    }
   }
   
   // Kirim ke channel juga (kalau CHANNEL_ID ada)
