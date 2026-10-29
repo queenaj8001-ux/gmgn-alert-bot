@@ -13,6 +13,9 @@ const BIRDEYE_API_KEY = process.env.BIRDEYE_API_KEY;
 const PRICE_HIGH = parseFloat(process.env.PRICE_HIGH || '0.0001');
 const PRICE_LOW = parseFloat(process.env.PRICE_LOW || '0.00005');
 
+// Major coins filter - exclude tokens with price > $1 (not memecoins)
+const MAX_MEMECOIN_PRICE = 1.0; // Memecoins rarely exceed $1
+
 // Kriteria KEDUA (opsional): untuk pump yang lebih moderat, minta bukti dump yang JAUH
 // lebih dalam sebelum dianggap sinyal valid. Kalau harga ternyata terus naik sampai
 // menyentuh PRICE_HIGH (kriteria 1), otomatis "naik kelas" dan ikut aturan kriteria 1
@@ -619,8 +622,42 @@ async function getJupiterPrices(addresses) {
   return allResults;
 }
 
+// Fetch token data from Birdeye (for signal checks when DexScreener unavailable)
+async function getBirdeyeTokenData(address) {
+  try {
+    const url = `https://public-api.birdeye.so/defi/token_overview?address=${address}`;
+    const res = await fetch(url, {
+      headers: { 
+        accept: 'application/json', 
+        'x-chain': 'solana', 
+        'X-API-KEY': BIRDEYE_API_KEY 
+      },
+    });
+    
+    if (!res.ok) return null;
+    const json = await res.json();
+    const data = json.data;
+    if (!data) return null;
+    
+    return {
+      address,
+      symbol: data.symbol || '?',
+      name: data.name || '?',
+      price: data.price || 0,
+      liquidity: data.liquidity || 0,
+      marketCap: data.mc || 0,
+      volume24h: data.v24hUSD || 0,
+      volume1h: data.v1hUSD || 0,
+      priceChange24h: data.priceChange24hPercent || 0,
+    };
+  } catch (err) {
+    console.error(`Birdeye fetch error for ${address.substring(0,8)}:`, err.message);
+    return null;
+  }
+}
+
 // ==================== TAHAP 1: snapshot harga (gate STABIL saja) ====================
-async function getTokenSnapshot(address) {
+async function getTokenSnapshot(address, skipAgeCheck = false) {
   const url = `https://api.dexscreener.com/latest/dex/tokens/${address}`;
   const res = await fetch(url);
   if (!res.ok) return null;
@@ -636,7 +673,8 @@ async function getTokenSnapshot(address) {
 
   if (!p.pairCreatedAt) return null;
   const ageMinutes = (Date.now() - p.pairCreatedAt) / 60000;
-  if (ageMinutes < MIN_TOKEN_AGE_MINUTES || ageMinutes > MAX_TOKEN_AGE_MINUTES) return null;
+  // Skip age check for tokens already in watchlist (called from signal detection)
+  if (!skipAgeCheck && (ageMinutes < MIN_TOKEN_AGE_MINUTES || ageMinutes > MAX_TOKEN_AGE_MINUTES)) return null;
 
   const priceNum = parseFloat(p.priceUsd);
   if (!p.priceUsd || Number.isNaN(priceNum)) return null;
@@ -669,10 +707,18 @@ async function checkQualityGates(snapshot) {
 
   const txnsH1 = p.txns?.h1;
   const txnCount = txnsH1 ? (txnsH1.buys || 0) + (txnsH1.sells || 0) : 0;
-  if (txnCount === 0) return { pass: false, reason: 'volume ada tapi transaksi 0 (data tidak konsisten)' };
-  const avgTradeSize = volume1h / txnCount;
-  if (avgTradeSize < MIN_AVG_TRADE_SIZE_USD) {
-    return { pass: false, reason: `rata-rata transaksi $${avgTradeSize.toFixed(2)} dari ${txnCount}x (min $${MIN_AVG_TRADE_SIZE_USD})` };
+  
+  // Skip txn check for Birdeye source (doesn't provide txn counts)
+  if (snapshot.source !== 'birdeye' && txnCount === 0) {
+    return { pass: false, reason: 'volume ada tapi transaksi 0 (data tidak konsisten)' };
+  }
+  
+  // Calculate avg trade size only if txn data available
+  if (txnCount > 0) {
+    const avgTradeSize = volume1h / txnCount;
+    if (avgTradeSize < MIN_AVG_TRADE_SIZE_USD) {
+      return { pass: false, reason: `rata-rata transaksi $${avgTradeSize.toFixed(2)} dari ${txnCount}x (min $${MIN_AVG_TRADE_SIZE_USD})` };
+    }
   }
 
   const cached = state.prices[address] || {};
@@ -744,7 +790,40 @@ async function processOneToken(addr) {
 async function processOneTokenInner(addr) {
   let snapshot;
   try {
-    snapshot = await getTokenSnapshot(addr);
+    // Try DexScreener first, fallback to Birdeye if banned
+    snapshot = await getTokenSnapshot(addr, true);
+    
+    // If DexScreener fails (likely banned), try Birdeye
+    if (!snapshot) {
+      console.log(`📡 DexScreener failed for ${addr.substring(0,8)}, trying Birdeye...`);
+      const birdeyeData = await getBirdeyeTokenData(addr);
+      if (birdeyeData) {
+        // Convert Birdeye format to snapshot format
+        snapshot = {
+          address: addr,
+          symbol: birdeyeData.symbol,
+          name: birdeyeData.name,
+          price: birdeyeData.price,
+          pair: {
+            liquidity: { usd: birdeyeData.liquidity },
+            marketCap: birdeyeData.marketCap,
+            fdv: birdeyeData.marketCap,
+            volume: { 
+              h1: birdeyeData.volume1h,
+              h24: birdeyeData.volume24h
+            },
+            txns: { h1: { buys: 1, sells: 1 } }, // Birdeye doesn't provide txn counts, use placeholder
+            priceUsd: birdeyeData.price.toString(),
+            baseToken: {
+              symbol: birdeyeData.symbol,
+              name: birdeyeData.name
+            }
+          },
+          source: 'birdeye'
+        };
+        console.log(`✅ Birdeye data retrieved: liq=$${birdeyeData.liquidity} vol1h=$${birdeyeData.volume1h}`);
+      }
+    }
   } catch (err) {
     console.error(`Gagal ambil data ${addr}:`, err.message);
     return;
@@ -908,6 +987,11 @@ async function checkPricesOnceInner() {
     
     const currentPrice = jupData.usdPrice;
     
+    // Filter out major coins (price > $1 = not memecoin)
+    if (currentPrice > MAX_MEMECOIN_PRICE) {
+      continue; // Skip SOL, BTC, ETH, USDC, etc.
+    }
+    
     // Update maxPrice if current price is higher
     if (currentPrice > entry.maxPrice) {
       entry.maxPrice = currentPrice;
@@ -953,6 +1037,7 @@ async function checkPricesOnceInner() {
     
     // If dump detected, call full check with DexScreener for complete data
     if (dumpThreshold != null && sudahTurun) {
+      console.log(`🔍 DUMP DETECTED: ${addr.substring(0,8)}... maxPrice=$${entry.maxPrice} current=$${currentPrice} threshold=$${dumpThreshold}`);
       // Call existing processOneToken for full quality check
       await processOneToken(addr);
     }
