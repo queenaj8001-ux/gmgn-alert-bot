@@ -90,7 +90,7 @@ const GECKO_PAGES = parseInt(process.env.GECKO_PAGES || '1', 10);
 const STATE_DIR = process.env.STATE_DIR || __dirname;
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
 
-console.log('gmgn-alert-bot — versi 2026-10-29-v40 (Bugfix: Signal Counters + /logs + Cleanup)');
+console.log('gmgn-alert-bot — versi 2026-10-29-v41 (Jupiter Price API + Smart Cleanup)');
 console.log(`Discovery Birdeye: tiap ${(BIRDEYE_DISCOVER_INTERVAL_MS / 60000).toFixed(0)} menit. Discovery GeckoTerminal: tiap ${(GECKO_DISCOVER_INTERVAL_MS / 1000).toFixed(0)} detik. Cek harga: tiap ${(CHECK_INTERVAL_MS / 1000).toFixed(0)} detik.`);
 
 if (!BOT_TOKEN || !CHAT_ID || !BIRDEYE_API_KEY) {
@@ -586,6 +586,39 @@ async function refreshGeckoWatchlist() {
 // REMOVED: refreshDexScreenerWatchlist() - Redundant discovery layer
 // Using: Multi-Helius + PumpPortal + Gecko only
 
+// ==================== JUPITER PRICE API (Batch price fetching) ====================
+async function getJupiterPrices(addresses) {
+  if (!addresses || addresses.length === 0) return {};
+  
+  // Jupiter v3 supports up to 100 addresses per request
+  const MAX_BATCH = 100;
+  const batches = [];
+  for (let i = 0; i < addresses.length; i += MAX_BATCH) {
+    batches.push(addresses.slice(i, i + MAX_BATCH));
+  }
+  
+  const allResults = {};
+  
+  for (const batch of batches) {
+    try {
+      const url = `https://api.jup.ag/price/v3?ids=${batch.join(',').trim()}`;
+      const res = await fetch(url);
+      
+      if (!res.ok) {
+        console.error(`Jupiter API error: ${res.status}`);
+        continue;
+      }
+      
+      const data = await res.json();
+      Object.assign(allResults, data);
+    } catch (err) {
+      console.error('Jupiter API fetch error:', err.message);
+    }
+  }
+  
+  return allResults;
+}
+
 // ==================== TAHAP 1: snapshot harga (gate STABIL saja) ====================
 async function getTokenSnapshot(address) {
   const url = `https://api.dexscreener.com/latest/dex/tokens/${address}`;
@@ -781,6 +814,7 @@ async function processOneTokenInner(addr) {
       entry.maxPrice = snapshot.price;
       entry.recentPrices = [];
       entry.touchedTier2Zone = false;
+      entry.signalSent = true; // Mark signal sent for cleanup
     } else {
       console.log(`Sinyal tertunda (kriteria ${tierLabel}): ${snapshot.symbol} (${addr}) — ${quality.reason}`);
     }
@@ -855,15 +889,132 @@ async function checkPricesOnceInner() {
     console.log('Watchlist masih kosong, tunggu refresh pertama selesai...');
     return;
   }
-  console.log(`[${new Date().toISOString()}] Cek harga ${state.watchlist.length} koin di watchlist (batch ${BATCH_SIZE})...`);
+  console.log(`[${new Date().toISOString()}] Cek harga ${state.watchlist.length} koin di watchlist (Jupiter batch API)...`);
 
-  for (let i = 0; i < state.watchlist.length; i += BATCH_SIZE) {
-    const batch = state.watchlist.slice(i, i + BATCH_SIZE);
-    await Promise.all(batch.map((addr) => processOneToken(addr)));
-    await sleep(50);
+  // Fetch ALL prices in one Jupiter API call (up to 100 tokens)
+  const jupiterPrices = await getJupiterPrices(state.watchlist);
+  
+  // Update price tracking for each token
+  for (const addr of state.watchlist) {
+    const jupData = jupiterPrices[addr];
+    if (!jupData || !jupData.usdPrice) {
+      // Token not found in Jupiter, skip (might be too new or delisted)
+      continue;
+    }
+    
+    // Update price tracking in state
+    const entry = state.prices[addr] || { maxPrice: 0 };
+    state.prices[addr] = entry;
+    
+    const currentPrice = jupData.usdPrice;
+    
+    // Update maxPrice if current price is higher
+    if (currentPrice > entry.maxPrice) {
+      entry.maxPrice = currentPrice;
+    }
+    
+    // Track all-time max price (for tier logic)
+    entry.allTimeMaxPrice = Math.max(entry.allTimeMaxPrice || 0, currentPrice);
+    
+    // Update recent prices for momentum calculation
+    entry.recentPrices = entry.recentPrices || [];
+    entry.recentPrices.push({ price: currentPrice, t: Date.now() });
+    if (entry.recentPrices.length > MOMENTUM_WINDOW) {
+      entry.recentPrices = entry.recentPrices.slice(-MOMENTUM_WINDOW);
+    }
+    
+    // Store Jupiter liquidity data (bonus!)
+    if (jupData.liquidity != null) {
+      entry.jupiterLiquidity = jupData.liquidity;
+    }
+    
+    // Mark if price crossed tier 2 zone (for tier 1 eligibility)
+    if (PRICE_HIGH_2 != null && currentPrice >= PRICE_HIGH_2 && currentPrice < PRICE_HIGH) {
+      entry.touchedTier2Zone = true;
+    }
+    
+    // Check if token is armed (crossed threshold)
+    const pernahCapaiTier1 = entry.allTimeMaxPrice >= PRICE_HIGH;
+    const passedThroughTier2Zone = PRICE_HIGH_2 == null || entry.touchedTier2Zone === true;
+    const sudahMelambungTier1 = entry.maxPrice >= PRICE_HIGH && passedThroughTier2Zone;
+    const sudahMelambungTier2 = PRICE_HIGH_2 != null && entry.maxPrice >= PRICE_HIGH_2 && !pernahCapaiTier1;
+    
+    let dumpThreshold = null;
+    let tierLabel = null;
+    if (sudahMelambungTier1) {
+      dumpThreshold = PRICE_LOW;
+      tierLabel = '1';
+    } else if (sudahMelambungTier2) {
+      dumpThreshold = PRICE_LOW_2;
+      tierLabel = '2';
+    }
+    
+    const sudahTurun = dumpThreshold != null && currentPrice <= dumpThreshold;
+    
+    // If dump detected, call full check with DexScreener for complete data
+    if (dumpThreshold != null && sudahTurun) {
+      // Call existing processOneToken for full quality check
+      await processOneToken(addr);
+    }
   }
 
   saveState(state);
+}
+
+// ==================== SMART WATCHLIST CLEANUP ====================
+async function cleanupWatchlist() {
+  const now = Date.now();
+  const removed = [];
+  const initialCount = state.watchlist.length;
+  
+  state.watchlist = state.watchlist.filter(addr => {
+    const priceData = state.prices[addr];
+    if (!priceData) {
+      // No price data at all = remove
+      removed.push(`${addr.substring(0, 8)}... (no data)`);
+      return false;
+    }
+    
+    const age = now - (priceData.discoveredAt || now);
+    const ageMinutes = age / 60000;
+    
+    // KEEP if:
+    // 1. Fresh (<30 min) - give chance to pump
+    if (ageMinutes < 30) return true;
+    
+    // 2. Has pumped (maxPrice >0) AND not too old (<120 min) - wait for dump signal
+    if (priceData.maxPrice > 0 && ageMinutes < 120) return true;
+    
+    // REMOVE if:
+    // 3. Old (>60 min) AND never pumped (maxPrice = 0) - dead token
+    if (ageMinutes > 60 && priceData.maxPrice === 0) {
+      removed.push(`${addr.substring(0, 8)}... (${ageMinutes.toFixed(0)}min, never pumped)`);
+      return false;
+    }
+    
+    // 4. Very old (>120 min) - max age limit
+    if (ageMinutes > 120) {
+      removed.push(`${addr.substring(0, 8)}... (${ageMinutes.toFixed(0)}min, too old)`);
+      return false;
+    }
+    
+    // 5. Already sent signal - job done
+    if (priceData.signalSent) {
+      removed.push(`${addr.substring(0, 8)}... (signal sent)`);
+      return false;
+    }
+    
+    return true; // Keep by default
+  });
+  
+  if (removed.length > 0) {
+    console.log(`🧹 Cleanup: removed ${removed.length}/${initialCount} tokens (${state.watchlist.length} remaining)`);
+    removed.slice(0, 5).forEach(r => console.log(`  - ${r}`));
+    if (removed.length > 5) {
+      console.log(`  ... and ${removed.length - 5} more`);
+    }
+    saveState(state);
+  }
 }
 
 // ==================== IN-MEMORY SIGNAL QUEUE ====================
@@ -1698,6 +1849,7 @@ function checkCriteria1And2RealTime(mint, currentPrice, tokenSymbol) {
   setInterval(checkPricesOnce, CHECK_INTERVAL_MS);
   setInterval(fastCheckArmedTokens, FAST_CHECK_INTERVAL_MS);
   setInterval(highRiskCheckArmedTokens, HIGH_RISK_FAST_CHECK_INTERVAL_MS);
+  setInterval(cleanupWatchlist, 10 * 60 * 1000); // Cleanup every 10 minutes
   
   // Start Telegram command listener (Phase 1: Read-only)
   const { startCommandListener } = require('./telegram-commands.js');
