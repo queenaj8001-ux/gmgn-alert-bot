@@ -6,7 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { validatePriceThreshold, previewConfigChange, getCurrentConfig } = require('./config-validator.js');
+const { validatePriceThreshold, validateFilter, previewConfigChange, getCurrentConfig } = require('./config-validator.js');
 const { atomicWriteEnv, reloadConfigSafe, verifyUpdate, listBackups } = require('./config-writer.js');
 
 // Authorization: Only Okta can use commands
