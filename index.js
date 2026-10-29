@@ -1053,8 +1053,15 @@ async function analyzeHeliusBundleBuys(tokenMint, launchTimestamp) {
 function setupMultiHeliusEnhancedWebSocket() {
   const HELIUS_KEYS = [
     process.env.HELIUS_API_KEY,      // Key 1 (primary)
-    process.env.HELIUS_API_KEY_2,    // Key 2 (backup)
-    process.env.HELIUS_API_KEY_3     // Key 3 (backup)
+    process.env.HELIUS_API_KEY_2,    // Key 2
+    process.env.HELIUS_API_KEY_3,    // Key 3
+    process.env.HELIUS_API_KEY_4,    // Key 4 (Babeh08)
+    process.env.HELIUS_API_KEY_5,    // Key 5 (Babeh083)
+    process.env.HELIUS_API_KEY_6,    // Key 6 (Babeh084)
+    process.env.HELIUS_API_KEY_7,    // Key 7 (Babeh085)
+    process.env.HELIUS_API_KEY_8,    // Key 8 (Babeh086)
+    process.env.HELIUS_API_KEY_9,    // Key 9 (Babeh088)
+    process.env.HELIUS_API_KEY_10    // Key 10 (Babeh089)
   ].filter(key => key); // Remove undefined keys
   
   if (HELIUS_KEYS.length === 0) {
