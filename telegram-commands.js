@@ -318,7 +318,7 @@ function commandGetConfig() {
 function commandLogs(lines = 20) {
   try {
     const { execSync } = require('child_process');
-    const output = execSync(`journalctl --user -u eyescan2-bot -n ${lines} --no-pager`, { 
+    const output = execSync(`/usr/bin/journalctl --user -u eyescan2-bot -n ${lines} --no-pager`, { 
       encoding: 'utf8',
       maxBuffer: 50 * 1024,
     });
