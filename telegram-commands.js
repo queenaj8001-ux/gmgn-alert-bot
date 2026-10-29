@@ -265,8 +265,10 @@ function commandStatus(state) {
                  p.maxPrice >= parseFloat(process.env.PRICE_HIGH_2 || 0));
   }).length : 0;
   
-  // Read signal counter from state.json (persists across restarts)
+  // Read signal counters from state.json (persists across restarts)
+  const signalsSentToday = state.signalsSentToday || 0;
   const signalsSent = state.signalsSent || 0;
+  const lastResetDate = state.lastResetDate || 'N/A';
 
   return `📊 <b>Bot Status</b>
 
@@ -275,7 +277,9 @@ function commandStatus(state) {
 📡 <b>Watchlist:</b> ${watchlistCount} tokens
 📈 <b>Prices tracked:</b> ${pricesTracked}
 🎯 <b>Armed tokens:</b> ${armed}
-📤 <b>Signals sent:</b> ${signalsSent}
+📤 <b>Signals sent today:</b> ${signalsSentToday}
+📊 <b>Total signals:</b> ${signalsSent}
+📅 <b>Last reset:</b> ${lastResetDate}
 🤖 <b>Commands received:</b> ${botStats.commandsReceived}
 
 ✅ <b>Status:</b> Running normally`;

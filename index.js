@@ -108,9 +108,19 @@ function loadState() {
       birdeyeAddresses: raw.birdeyeAddresses || [],
       geckoAddresses: raw.geckoAddresses || [],
       signalsSent: raw.signalsSent || 0,
+      signalsSentToday: raw.signalsSentToday || 0,
+      lastResetDate: raw.lastResetDate || new Date().toISOString().split('T')[0],
     };
   } catch {
-    return { watchlist: [], prices: {}, birdeyeAddresses: [], geckoAddresses: [], signalsSent: 0 };
+    return { 
+      watchlist: [], 
+      prices: {}, 
+      birdeyeAddresses: [], 
+      geckoAddresses: [], 
+      signalsSent: 0,
+      signalsSentToday: 0,
+      lastResetDate: new Date().toISOString().split('T')[0],
+    };
   }
 }
 function saveState(state) {
@@ -232,7 +242,17 @@ function computeMomentum(recentPrices) {
 // ==================== TELEGRAM ====================
 async function sendTelegramAlert({ symbol, name, address, price, volume1h, marketCap, liquidityUsd, pairUrl, dexId, momentum, tierLabel, clusterWarning, bundleWarning, bundlePercentage, bundleDataMissing, lpBurnedByGraduation, heliusBundleCheck, heliusBundleData }) {
   // Increment signal counter (persist to state.json)
+  // Check if date changed (midnight passed) - reset daily counter
+  const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+  if (state.lastResetDate !== today) {
+    console.log(`📅 Date changed: ${state.lastResetDate} → ${today}. Resetting daily counter.`);
+    state.signalsSentToday = 0;
+    state.lastResetDate = today;
+  }
+  
+  // Increment both counters
   state.signalsSent = (state.signalsSent || 0) + 1;
+  state.signalsSentToday = (state.signalsSentToday || 0) + 1;
   saveState(state);
   const mcText = marketCap != null ? `$${Number(marketCap).toLocaleString('en-US')}` : 'Data tidak tersedia';
   const risky = liquidityUsd == null || liquidityUsd < LIQUIDITY_MIN_USD;
