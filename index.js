@@ -107,9 +107,10 @@ function loadState() {
       prices: raw.prices || {},
       birdeyeAddresses: raw.birdeyeAddresses || [],
       geckoAddresses: raw.geckoAddresses || [],
+      signalsSent: raw.signalsSent || 0,
     };
   } catch {
-    return { watchlist: [], prices: {}, birdeyeAddresses: [], geckoAddresses: [] };
+    return { watchlist: [], prices: {}, birdeyeAddresses: [], geckoAddresses: [], signalsSent: 0 };
   }
 }
 function saveState(state) {
@@ -230,13 +231,9 @@ function computeMomentum(recentPrices) {
 
 // ==================== TELEGRAM ====================
 async function sendTelegramAlert({ symbol, name, address, price, volume1h, marketCap, liquidityUsd, pairUrl, dexId, momentum, tierLabel, clusterWarning, bundleWarning, bundlePercentage, bundleDataMissing, lpBurnedByGraduation, heliusBundleCheck, heliusBundleData }) {
-  // Increment signal counter for /status command
-  try {
-    const { incrementSignalCount } = require('./telegram-commands.js');
-    incrementSignalCount();
-  } catch (err) {
-    // Ignore if module not loaded yet
-  }
+  // Increment signal counter (persist to state.json)
+  state.signalsSent = (state.signalsSent || 0) + 1;
+  saveState(state);
   const mcText = marketCap != null ? `$${Number(marketCap).toLocaleString('en-US')}` : 'Data tidak tersedia';
   const risky = liquidityUsd == null || liquidityUsd < LIQUIDITY_MIN_USD;
   const riskLine = risky ? `\n⚠️ RISIKO LIKUIDITAS TINGGI` : '';

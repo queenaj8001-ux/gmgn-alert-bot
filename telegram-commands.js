@@ -46,9 +46,11 @@ const COMMAND_LIST = [
   // { command: 'restart', description: 'Restart bot' },
 ];
 
-// Increment signal counter (call this in sendTelegramAlert)
+// Increment signal counter - DEPRECATED (now in state.json)
+// This function kept for backward compatibility but does nothing
 function incrementSignalCount() {
-  botStats.signalsSent++;
+  // Counter now tracked in state.json by index.js
+  // This is called from old code path but does nothing
 }
 
 // Get Telegram updates (long polling)
@@ -262,6 +264,9 @@ function commandStatus(state) {
     return p && (p.maxPrice >= parseFloat(process.env.PRICE_HIGH || 0) || 
                  p.maxPrice >= parseFloat(process.env.PRICE_HIGH_2 || 0));
   }).length : 0;
+  
+  // Read signal counter from state.json (persists across restarts)
+  const signalsSent = state.signalsSent || 0;
 
   return `📊 <b>Bot Status</b>
 
@@ -270,7 +275,7 @@ function commandStatus(state) {
 📡 <b>Watchlist:</b> ${watchlistCount} tokens
 📈 <b>Prices tracked:</b> ${pricesTracked}
 🎯 <b>Armed tokens:</b> ${armed}
-📤 <b>Signals sent:</b> ${botStats.signalsSent}
+📤 <b>Signals sent:</b> ${signalsSent}
 🤖 <b>Commands received:</b> ${botStats.commandsReceived}
 
 ✅ <b>Status:</b> Running normally`;
