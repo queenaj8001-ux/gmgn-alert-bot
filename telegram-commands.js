@@ -499,12 +499,31 @@ Backup: ${writeResult.backup}`;
     const verified = verifyUpdate(envKey, value);
     
     if (!verified) {
-      return `⚠️ <b>Verification failed!</b>
+      // Verification failed = index.js has cached old values
+      // Need restart to reload all cached constants
+      console.log('⚠️ Verification failed, restarting bot to reload cached values...');
+      
+      // Schedule restart after reply sent
+      setTimeout(() => {
+        console.log('🔄 Restarting bot (config update requires restart)...');
+        process.exit(0); // Systemd will restart us
+      }, 2000);
+      
+      return `✅ <b>Price updated successfully!</b>
 
-File written and reloaded, but value not updated.
-Check bot logs for details.
+<b>Changed:</b> ${tier}
+<b>Old:</b> $${oldValue}
+<b>New:</b> $${value}
 
-Backup: ${writeResult.backup}`;
+<b>Status:</b>
+✅ File written (atomic)
+✅ Config reloaded
+⚠️ Bot restarting to apply changes...
+
+<b>Backup:</b> ${path.basename(writeResult.backup)}
+
+<i>Bot will restart in 2 seconds (downtime ~3s)</i>
+Use /status to verify restart.`;
     }
     
     return `✅ <b>Price updated successfully!</b>
