@@ -39,10 +39,10 @@ const COMMAND_LIST = [
   { command: 'getconfig', description: 'Show current config' },
   { command: 'logs', description: 'Show recent logs (default 20 lines)' },
   { command: 'setprice', description: 'Update price thresholds (tier value)' },
+  { command: 'setfilter', description: 'Update filters (age, liquidity, etc)' },
   { command: 'reload', description: 'Reload config from disk' },
   { command: 'undo', description: 'Rollback to previous backup' },
   // Phase 2 (coming soon):
-  // { command: 'setfilter', description: 'Update filters' },
   // { command: 'restart', description: 'Restart bot' },
 ];
 
@@ -159,6 +159,44 @@ function createConfirmationKeyboard() {
   };
 }
 
+// Create inline keyboard for /setfilter command
+function createSetFilterKeyboard() {
+  const currentConfig = getCurrentConfig();
+  
+  return {
+    inline_keyboard: [
+      [
+        { 
+          text: `⏱️ Min Age (${currentConfig.MIN_TOKEN_AGE_MINUTES || 'N/A'}m)`, 
+          callback_data: 'sf_age_min' 
+        },
+        { 
+          text: `⏳ Max Age (${currentConfig.MAX_TOKEN_AGE_MINUTES || 'N/A'}m)`, 
+          callback_data: 'sf_age_max' 
+        },
+      ],
+      [
+        { 
+          text: `💧 Min Liquidity ($${currentConfig.MIN_LIQUIDITY_FOR_SIGNAL_USD || 'N/A'})`, 
+          callback_data: 'sf_liq' 
+        },
+      ],
+      [
+        { 
+          text: `📊 Min Market Cap ($${currentConfig.MIN_MARKET_CAP_USD || 'N/A'})`, 
+          callback_data: 'sf_mcap' 
+        },
+      ],
+      [
+        { 
+          text: `📈 Min Volume 1h ($${currentConfig.MIN_VOLUME_1H_USD || 'N/A'})`, 
+          callback_data: 'sf_vol' 
+        },
+      ],
+    ],
+  };
+}
+
 // Set bot commands for autocomplete (shows popup when user types "/")
 async function setMyCommands(botToken) {
   try {
@@ -199,13 +237,13 @@ function commandHelp() {
 
 <b>Config Management (Phase 2):</b>
 💰 /setprice &lt;tier&gt; &lt;value&gt; - Update price threshold
+🎚️ /setfilter &lt;filter&gt; &lt;value&gt; - Update signal filter
 🔄 /reload - Reload config without restart
 ↩️ /undo - Show backup info
 
 <b>Authorization:</b> Only authorized users can use commands.
 
 <b>Coming soon:</b>
-/setfilter - Update filters
 /restart - Restart bot
 
 <i>Eyescan2 v38.1 - Real-time Solana token signals</i>`;
@@ -376,7 +414,97 @@ ${preview}
   };
 }
 
-// Command: /reload
+// Command: /setfilter <filter> <value>
+// Example: /setfilter age_min 5
+// OR: /setfilter (shows keyboard)
+async function commandSetFilter(userId, args) {
+  // No args = show keyboard
+  if (args.length === 0) {
+    const keyboard = createSetFilterKeyboard();
+    return {
+      text: `⚙️ <b>Update Signal Filters</b>
+
+<b>Current filters:</b>
+• Age: Token age range (minutes)
+• Liquidity: Minimum liquidity (USD)
+• Market Cap: Minimum market cap (USD)
+• Volume: Minimum 1h volume (USD)
+
+<b>Select filter to update:</b>`,
+      keyboard,
+    };
+  }
+  
+  // Legacy mode: /setfilter age_min 5
+  if (args.length !== 2) {
+    return `❌ <b>Usage:</b> /setfilter &lt;filter&gt; &lt;value&gt;
+
+<b>Valid filters:</b>
+• age_min - Min token age (minutes)
+• age_max - Max token age (minutes)
+• liquidity_min - Min liquidity (USD)
+• mcap_min - Min market cap (USD)
+• volume_min - Min volume 1h (USD)
+
+<b>Example:</b>
+<code>/setfilter age_min 5</code>
+
+<b>Or use /setfilter without args for button interface.</b>`;
+  }
+
+  const filter = args[0].toLowerCase();
+  const value = parseFloat(args[1]);
+
+  // Validate filter name
+  const validFilters = ['age_min', 'age_max', 'liquidity_min', 'mcap_min', 'volume_min'];
+  if (!validFilters.includes(filter)) {
+    return `❌ Invalid filter: ${args[0]}
+
+<b>Valid filters:</b> ${validFilters.join(', ')}`;
+  }
+
+  // Validate value is number
+  if (isNaN(value)) {
+    return `❌ Invalid value: ${args[1]} (must be a number)`;
+  }
+
+  // Get current config
+  const currentConfig = getCurrentConfig();
+
+  // Validate with config-validator
+  const validation = validateFilter(filter, value, currentConfig);
+
+  if (!validation.valid) {
+    return `❌ <b>Validation failed:</b>
+
+${validation.error}
+
+<b>Current config:</b>
+${validation.context || 'N/A'}`;
+  }
+
+  // Generate preview
+  const preview = previewConfigChange('filter', filter, value, currentConfig);
+
+  // Store pending confirmation
+  pendingConfirmations[userId] = {
+    type: 'setfilter',
+    data: { filter, value },
+    expiresAt: Date.now() + 60000, // 60s timeout
+    preview,
+  };
+
+  const keyboard = createConfirmationKeyboard();
+
+  return {
+    text: `⚠️ <b>Confirm Filter Update</b>
+
+${preview}
+
+<b>Click button to confirm or cancel:</b>`,
+    keyboard,
+  };
+}
 async function commandReload() {
   try {
     const result = reloadConfigSafe();
@@ -548,6 +676,95 @@ Check bot logs for details.`;
   }
 }
 
+// Execute setfilter after confirmation
+async function executeSetFilter(data) {
+  const { filter, value } = data;
+  
+  try {
+    // Map filter to env var name
+    const filterMap = {
+      age_min: 'MIN_TOKEN_AGE_MINUTES',
+      age_max: 'MAX_TOKEN_AGE_MINUTES',
+      liquidity_min: 'MIN_LIQUIDITY_FOR_SIGNAL_USD',
+      mcap_min: 'MIN_MARKET_CAP_USD',
+      volume_min: 'MIN_VOLUME_1H_USD',
+    };
+    
+    const envKey = filterMap[filter];
+    const oldValue = process.env[envKey];
+    
+    // Atomic write
+    const writeResult = atomicWriteEnv({ [envKey]: String(value) });
+    
+    // Reload config
+    const reloadResult = reloadConfigSafe();
+    
+    if (!reloadResult.success) {
+      return `❌ <b>Reload failed!</b>
+
+File written but reload error: ${reloadResult.error}
+
+<b>Manual action needed:</b>
+1. Check bot logs
+2. Try /reload command
+3. Or restart bot if needed
+
+Backup: ${writeResult.backup}`;
+    }
+    
+    // Verify update
+    const verified = verifyUpdate(envKey, value);
+    
+    if (!verified) {
+      // Verification failed = index.js has cached old values
+      // Need restart to reload all cached constants
+      console.log('⚠️ Verification failed, restarting bot to reload cached values...');
+      
+      // Schedule restart after reply sent
+      setTimeout(() => {
+        console.log('🔄 Restarting bot (config update requires restart)...');
+        process.exit(0); // Systemd will restart us
+      }, 2000);
+      
+      return `✅ <b>Filter updated successfully!</b>
+
+<b>Changed:</b> ${filter}
+<b>Old:</b> ${oldValue}
+<b>New:</b> ${value}
+
+<b>Status:</b>
+✅ File written (atomic)
+✅ Config reloaded
+⚠️ Bot restarting to apply changes...
+
+<b>Backup:</b> ${path.basename(writeResult.backup)}
+
+<i>Bot will restart in 2 seconds (downtime ~3s)</i>
+Use /status to verify restart.`;
+    }
+    
+    return `✅ <b>Filter updated successfully!</b>
+
+<b>Changed:</b> ${filter}
+<b>Old:</b> ${oldValue}
+<b>New:</b> ${value}
+
+<b>Status:</b>
+✅ File written (atomic)
+✅ Config reloaded (no restart)
+✅ Value verified
+
+<b>Backup:</b> ${path.basename(writeResult.backup)}
+
+Use /getconfig to verify all filters.`;
+    
+  } catch (err) {
+    return `❌ <b>Execute failed:</b> ${err.message}
+
+Check bot logs for details.`;
+  }
+}
+
 // Format uptime
 function formatUptime(seconds) {
   const d = Math.floor(seconds / 86400);
@@ -644,6 +861,65 @@ async function handleCallbackQuery(botToken, callbackQuery, state) {
         messageId
       );
       
+    } else if (data.startsWith('sf_')) {
+      // Setfilter selection: sf_age_min, sf_age_max, sf_liq, sf_mcap, sf_vol
+      const filterMap = {
+        sf_age_min: 'age_min',
+        sf_age_max: 'age_max',
+        sf_liq: 'liquidity_min',
+        sf_mcap: 'mcap_min',
+        sf_vol: 'volume_min',
+      };
+      
+      const filter = filterMap[data];
+      if (!filter) {
+        await answerCallbackQuery(botToken, queryId, '❌ Invalid filter');
+        return;
+      }
+      
+      const currentConfig = getCurrentConfig();
+      const filterEnvMap = {
+        age_min: 'MIN_TOKEN_AGE_MINUTES',
+        age_max: 'MAX_TOKEN_AGE_MINUTES',
+        liquidity_min: 'MIN_LIQUIDITY_FOR_SIGNAL_USD',
+        mcap_min: 'MIN_MARKET_CAP_USD',
+        volume_min: 'MIN_VOLUME_1H_USD',
+      };
+      const envKey = filterEnvMap[filter];
+      const currentValue = currentConfig[envKey];
+      
+      // Get unit and example
+      const filterInfo = {
+        age_min: { unit: 'minutes', example: '5' },
+        age_max: { unit: 'minutes', example: '120' },
+        liquidity_min: { unit: 'USD', example: '2000' },
+        mcap_min: { unit: 'USD', example: '10000' },
+        volume_min: { unit: 'USD', example: '1000' },
+      };
+      const info = filterInfo[filter];
+      
+      // Store "waiting for value" state
+      pendingConfirmations[userId] = {
+        type: 'setfilter_waiting_value',
+        data: { filter },
+        expiresAt: Date.now() + 120000, // 2 min timeout
+      };
+      
+      await answerCallbackQuery(botToken, queryId);
+      await sendTelegramReply(
+        botToken,
+        chatId,
+        `⚙️ <b>Update ${filter.replace('_', ' ')}</b>
+
+<b>Current value:</b> ${currentValue} ${info.unit}
+
+<b>Enter new value:</b>
+<i>Example: ${info.example}</i>
+
+<i>(Timeout in 2 minutes)</i>`,
+        messageId
+      );
+      
     } else if (data === 'confirm_yes') {
       // Confirmation: Yes
       const pending = pendingConfirmations[userId];
@@ -665,6 +941,9 @@ async function handleCallbackQuery(botToken, callbackQuery, state) {
       
       if (pending.type === 'setprice') {
         const result = await executeSetPrice(pending.data);
+        await sendTelegramReply(botToken, chatId, result, messageId);
+      } else if (pending.type === 'setfilter') {
+        const result = await executeSetFilter(pending.data);
         await sendTelegramReply(botToken, chatId, result, messageId);
       }
       
@@ -750,6 +1029,46 @@ async function processCommand(botToken, msg, state) {
       console.log(`✅ Value validated, waiting for confirmation: ${tier} = ${value}`);
       return;
     }
+    
+    // Check if waiting for filter value
+    if (pending && pending.type === 'setfilter_waiting_value' && !text.startsWith('/')) {
+      // User entered value after clicking filter button
+      const value = parseFloat(text.trim());
+      
+      if (isNaN(value)) {
+        await sendTelegramReply(botToken, chatId, `❌ Invalid number: ${text}\n\nPlease enter a valid number`, messageId);
+        return;
+      }
+      
+      const { filter } = pending.data;
+      
+      // Validate
+      const currentConfig = getCurrentConfig();
+      const validation = validateFilter(filter, value, currentConfig);
+      
+      if (!validation.valid) {
+        await sendTelegramReply(botToken, chatId, `❌ <b>Validation failed:</b>\n\n${validation.error}\n\n<b>Current config:</b>\n${validation.context || 'N/A'}`, messageId);
+        return;
+      }
+      
+      // Generate preview
+      const preview = previewConfigChange('filter', filter, value, currentConfig);
+      
+      // Update pending state to confirmation
+      pendingConfirmations[userId] = {
+        type: 'setfilter',
+        data: { filter, value },
+        expiresAt: Date.now() + 60000, // 60s timeout
+        preview,
+      };
+      
+      keyboard = createConfirmationKeyboard();
+      reply = `⚠️ <b>Confirm Filter Update</b>\n\n${preview}\n\n<b>Click button to confirm or cancel:</b>`;
+      
+      await sendTelegramReply(botToken, chatId, reply, messageId, keyboard);
+      console.log(`✅ Value validated, waiting for confirmation: ${filter} = ${value}`);
+      return;
+    }
 
     // Next check if this is a yes/no text confirmation (legacy mode)
     if (!text.startsWith('/')) {
@@ -794,6 +1113,22 @@ async function processCommand(botToken, msg, state) {
         commandLock = true;
         try {
           const result = await commandSetPrice(userId, args);
+          if (typeof result === 'object' && result.text) {
+            // Result has keyboard
+            reply = result.text;
+            keyboard = result.keyboard;
+          } else {
+            reply = result;
+          }
+        } finally {
+          commandLock = false;
+        }
+        break;
+
+      case '/setfilter':
+        commandLock = true;
+        try {
+          const result = await commandSetFilter(userId, args);
           if (typeof result === 'object' && result.text) {
             // Result has keyboard
             reply = result.text;
