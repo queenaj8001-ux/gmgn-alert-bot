@@ -1416,6 +1416,42 @@ async function analyzeHeliusBundleBuys(tokenMint, launchTimestamp) {
   }
 }
 
+// ==================== WEBSOCKET MAJOR COIN FILTER ====================
+// Queue for checking prices before adding to watchlist
+const pendingWebSocketTokens = new Map(); // mint -> {name, symbol, source, data}
+
+/**
+ * Check if token should be added to watchlist (filter major coins)
+ * Returns: true (add), false (skip - major coin)
+ */
+async function shouldAddToWatchlist(mint, tokenInfo = {}) {
+  try {
+    // Quick Jupiter price check
+    const prices = await getJupiterPrices([mint]);
+    const price = prices[mint];
+    
+    if (!price || price === 0) {
+      // No price data, add anyway (likely new/unlisted token)
+      console.log(`✅ No price data for ${tokenInfo.symbol || mint.substring(0, 8)}, adding (new token)`);
+      return true;
+    }
+    
+    // Filter major coins (price > $1)
+    if (price > MAX_MEMECOIN_PRICE) {
+      console.log(`⛔ FILTERED: ${tokenInfo.symbol || mint.substring(0, 8)} price $${price.toFixed(4)} > $${MAX_MEMECOIN_PRICE} (major coin)`);
+      return false;
+    }
+    
+    console.log(`✅ PASSED: ${tokenInfo.symbol || mint.substring(0, 8)} price $${price.toFixed(6)} ≤ $${MAX_MEMECOIN_PRICE} (memecoin)`);
+    return true;
+    
+  } catch (error) {
+    // On error, add anyway (don't block discovery)
+    console.log(`⚠️ Price check error for ${mint.substring(0, 8)}, adding anyway:`, error.message);
+    return true;
+  }
+}
+
 // ==================== MULTI-HELIUS ENHANCED WEBSOCKET (3x REDUNDANCY + 5 DEX) ====================
 function setupMultiHeliusEnhancedWebSocket() {
   const HELIUS_KEYS = [
@@ -1515,6 +1551,13 @@ function setupMultiHeliusEnhancedWebSocket() {
             console.log(`📊 Source: Multi-DEX (${DEX_PROGRAMS.length} programs)`);
             console.log(`🔑 Connection: #${keyIndex + 1}`);
             console.log(`${'='.repeat(60)}\n`);
+            
+            // Check if memecoin (filter major coins)
+            const shouldAdd = await shouldAddToWatchlist(mint, { symbol: 'Unknown' });
+            if (!shouldAdd) {
+              console.log(`⏭️ Skipped major coin: ${mint.substring(0, 8)}...\n`);
+              continue;
+            }
             
             // Add to watchlist immediately
             state.watchlist.push(mint);
@@ -1645,6 +1688,13 @@ function setupHeliusEnhancedWebSocket() {
           console.log(`📊 Source: Raydium swap activity`);
           console.log(`${'='.repeat(60)}\n`);
           
+          // Check if memecoin (filter major coins)
+          const shouldAdd = await shouldAddToWatchlist(mint, { symbol: 'Unknown' });
+          if (!shouldAdd) {
+            console.log(`⏭️ Skipped major coin: ${mint.substring(0, 8)}...\n`);
+            continue;
+          }
+          
           // Add to watchlist immediately
           state.watchlist.push(mint);
           state.prices[mint] = {
@@ -1715,7 +1765,7 @@ function setupPumpPortalWebSocket() {
     console.log('📡 Subscribed to real-time token launches (PumpPortal)');
   });
   
-  ws.on('message', (data) => {
+  ws.on('message', async (data) => {
     try {
       const msg = JSON.parse(data);
       
@@ -1746,7 +1796,14 @@ function setupPumpPortalWebSocket() {
           // v38: Subscribe to real-time swaps for criteria detection
           subscribeToTokenSwaps(mint, name, symbol);
         } else {
-          // Token not in watchlist yet, add it with graduated status
+          // Token not in watchlist yet, check if memecoin before adding
+          const shouldAdd = await shouldAddToWatchlist(mint, { name, symbol });
+          if (!shouldAdd) {
+            console.log(`⏭️ Skipped major graduated coin: ${symbol}\n`);
+            return;
+          }
+          
+          // Add with graduated status
           state.watchlist.push(mint);
           state.prices[mint] = {
             maxPrice: 0,
@@ -1784,6 +1841,13 @@ function setupPumpPortalWebSocket() {
       console.log(`⏱️ Detected: ${new Date().toISOString()}`);
       console.log(`📊 Market Cap: ${msg.marketCapSol?.toFixed(2) || 'N/A'} SOL`);
       console.log(`${'='.repeat(60)}\n`);
+      
+      // Check if memecoin (filter major coins)
+      const shouldAdd = await shouldAddToWatchlist(mint, { name, symbol });
+      if (!shouldAdd) {
+        console.log(`⏭️ Skipped major coin: ${symbol}\n`);
+        return;
+      }
       
       // Add to watchlist immediately (fast-track)
       state.watchlist.push(mint);
