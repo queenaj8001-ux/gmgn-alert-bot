@@ -944,7 +944,38 @@ async function processOneTokenInner(addr) {
     console.error(`Gagal ambil data ${addr}:`, err.message);
     return;
   }
-  if (!snapshot) return;
+  
+  // FALLBACK: If DexScreener/Birdeye failed, use Jupiter price data we already have
+  if (!snapshot) {
+    const entry = state.prices[addr];
+    if (entry && entry.recentPrices && entry.recentPrices.length > 0) {
+      const latest = entry.recentPrices[entry.recentPrices.length - 1];
+      console.log(`⚠️  DexScreener & Birdeye failed for ${addr.substring(0,8)}, using Jupiter price data`);
+      
+      // Create minimal snapshot from existing data
+      snapshot = {
+        address: addr,
+        symbol: entry.symbol || addr.substring(0, 8),
+        name: entry.name || 'Unknown',
+        price: latest.price,
+        pair: {
+          liquidity: { usd: 0 }, // Unknown, but allow signal
+          marketCap: 0,
+          fdv: 0,
+          volume: { h1: 0, h24: 0 },
+          txns: { h1: { buys: 0, sells: 0 } },
+          priceUsd: latest.price.toString(),
+          baseToken: {
+            symbol: entry.symbol || addr.substring(0, 8),
+            name: entry.name || 'Unknown'
+          }
+        },
+        source: 'jupiter-fallback'
+      };
+    } else {
+      return; // No data at all, skip
+    }
+  }
 
   const entry = state.prices[addr] || { maxPrice: 0 };
   state.prices[addr] = entry; // tulis balik SEGERA — supaya referensi konsisten dipakai
