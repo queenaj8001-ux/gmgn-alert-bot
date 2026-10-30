@@ -248,7 +248,7 @@ function commandHelp() {
 <b>Coming soon:</b>
 /restart - Restart bot
 
-<i>Eyescan2 v41.4.1 - Real-time Solana token signals (Fresh token fix)</i>`;
+<i>Eyescan2 v41.5 - Real-time Solana token signals (Stricter price filter)</i>`;
 }
 
 // Command: /status
