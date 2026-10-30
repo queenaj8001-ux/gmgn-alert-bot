@@ -257,15 +257,15 @@ function commandStatus(state) {
   // state parameter might be stale (passed once at startup)
   const fs = require('fs');
   const path = require('path');
-  const STATE_DIR = process.env.STATE_DIR || path.join(__dirname);
-  const STATE_FILE = path.join(STATE_DIR, 'state.json');
+  // Use absolute path (telegram-commands.js is in same dir as index.js)
+  const STATE_FILE = path.join(__dirname, 'state.json');
   
   let freshState = state;
   try {
     const raw = fs.readFileSync(STATE_FILE, 'utf8');
     freshState = JSON.parse(raw);
   } catch (err) {
-    console.error('⚠️  /status: Failed to reload state, using passed state:', err.message);
+    console.error('⚠️  /status: Failed to reload state from', STATE_FILE, ':', err.message);
   }
   
   const uptime = Math.floor((Date.now() - botStats.startTime) / 1000);
