@@ -248,7 +248,7 @@ function commandHelp() {
 <b>Coming soon:</b>
 /restart - Restart bot
 
-<i>Eyescan2 v40 - Real-time Solana token signals</i>`;
+<i>Eyescan2 v41.3 - Real-time Solana token signals (200+ watchlist)</i>`;
 }
 
 // Command: /status
@@ -264,6 +264,7 @@ function commandStatus(state) {
   try {
     const raw = fs.readFileSync(STATE_FILE, 'utf8');
     freshState = JSON.parse(raw);
+    console.log(`✅ /status: Loaded fresh state - watchlist: ${freshState.watchlist?.length || 0} tokens`);
   } catch (err) {
     console.error('⚠️  /status: Failed to reload state from', STATE_FILE, ':', err.message);
   }
@@ -284,6 +285,8 @@ function commandStatus(state) {
   const signalsSentToday = freshState.signalsSentToday || 0;
   const signalsSent = freshState.signalsSent || 0;
   const lastResetDate = freshState.lastResetDate || 'N/A';
+  
+  console.log(`📊 /status: Returning watchlist=${watchlistCount}, armed=${armed}, prices=${pricesTracked}`);
 
   return `📊 <b>Bot Status</b>
 
