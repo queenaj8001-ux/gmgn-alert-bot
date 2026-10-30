@@ -1102,8 +1102,20 @@ async function fastCheckArmedTokens() {
   const armed = getArmedAddresses();
   if (armed.length === 0) return;
   isFastChecking = true;
+  const startTime = Date.now();
   try {
-    await Promise.all(armed.map((addr) => processOneToken(addr)));
+    console.log(`🔄 Fast check: Processing ${armed.length} armed tokens sequentially...`);
+    // RATE LIMITING: Sequential processing with 250ms delay between requests
+    // Prevents DexScreener ban (300 req/min limit)
+    for (let i = 0; i < armed.length; i++) {
+      await processOneToken(armed[i]);
+      if (i < armed.length - 1) {
+        await sleep(250); // 250ms delay = max 240 req/min (under 300 limit)
+      }
+    }
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const rate = ((armed.length / elapsed) * 60).toFixed(0);
+    console.log(`✅ Fast check complete: ${armed.length} tokens in ${elapsed}s (~${rate} req/min)`);
     saveState(state);
   } finally {
     isFastChecking = false;
@@ -1116,8 +1128,20 @@ async function highRiskCheckArmedTokens() {
   const highRisk = getHighRiskArmedAddresses(getArmedAddresses());
   if (highRisk.length === 0) return;
   isHighRiskChecking = true;
+  const startTime = Date.now();
   try {
-    await Promise.all(highRisk.map((addr) => processOneToken(addr)));
+    console.log(`⚡ High-risk check: Processing ${highRisk.length} tokens sequentially...`);
+    // RATE LIMITING: Sequential processing with 250ms delay between requests
+    // Prevents DexScreener ban (300 req/min limit)
+    for (let i = 0; i < highRisk.length; i++) {
+      await processOneToken(highRisk[i]);
+      if (i < highRisk.length - 1) {
+        await sleep(250); // 250ms delay = max 240 req/min (under 300 limit)
+      }
+    }
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const rate = ((highRisk.length / elapsed) * 60).toFixed(0);
+    console.log(`✅ High-risk check complete: ${highRisk.length} tokens in ${elapsed}s (~${rate} req/min)`);
     saveState(state);
   } finally {
     isHighRiskChecking = false;
