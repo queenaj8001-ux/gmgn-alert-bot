@@ -248,7 +248,7 @@ function commandHelp() {
 <b>Coming soon:</b>
 /restart - Restart bot
 
-<i>Eyescan2 v41.5 - Real-time Solana token signals (Stricter price filter)</i>`;
+<i>Eyescan2 v41.6 - Real-time Solana token signals (DexScreener ban workaround)</i>`;
 }
 
 // Command: /status
