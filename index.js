@@ -10,11 +10,40 @@ const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const CHANNEL_ID = process.env.TELEGRAM_CHANNEL_ID || ''; // Channel untuk Hermes monitor
 const BIRDEYE_API_KEY = process.env.BIRDEYE_API_KEY;
 
+// Multi Birdeye API keys for rotation (10 keys)
+const BIRDEYE_KEYS = [
+  process.env.BIRDEYE_API_KEY,
+  process.env.BIRDEYE_API_KEY_2,
+  process.env.BIRDEYE_API_KEY_3,
+  process.env.BIRDEYE_API_KEY_4,
+  process.env.BIRDEYE_API_KEY_5,
+  process.env.BIRDEYE_API_KEY_6,
+  process.env.BIRDEYE_API_KEY_7,
+  process.env.BIRDEYE_API_KEY_8,
+  process.env.BIRDEYE_API_KEY_9,
+  process.env.BIRDEYE_API_KEY_10,
+].filter(Boolean);
+
+let birdeyeKeyIndex = 0;
+
 const PRICE_HIGH = parseFloat(process.env.PRICE_HIGH || '0.0001');
 const PRICE_LOW = parseFloat(process.env.PRICE_LOW || '0.00005');
 
 // Major coins filter - exclude tokens with price > $1 (not memecoins)
 const MAX_MEMECOIN_PRICE = 1.0; // Memecoins rarely exceed $1
+const MAX_MEMECOIN_MARKET_CAP = 100000000; // $100M max (exclude major coins like BTC/ETH/SOL)
+
+// Known major coin addresses (always exclude)
+const MAJOR_COIN_BLACKLIST = [
+  'So11111111111111111111111111111111111112', // SOL
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+  'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So', // mSOL
+  '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs', // ETH (Wormhole)
+  'A7bdiYdS5GgdwjLhcNp8AZnh3WAr8UYRpkFgXAx6mLxS', // ETH (Portal)
+  '9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E', // BTC (Portal)
+  'cbbtcf3aa2a8a7c4c91987fa4cfc438fc5c87e8f13893cddf5a670d4e8ca9e65', // cbBTC
+];
 
 // Kriteria KEDUA (opsional): untuk pump yang lebih moderat, minta bukti dump yang JAUH
 // lebih dalam sebelum dianggap sinyal valid. Kalau harga ternyata terus naik sampai
@@ -480,13 +509,64 @@ async function getHolderCount(address) {
 // ==================== SUMBER DISCOVERY 1: BIRDEYE ====================
 async function getBirdeyeCandidates() {
   return throttledBirdeye(async () => {
-    const url = `https://public-api.birdeye.so/defi/tokenlist?sort_by=v24hUSD&sort_type=desc&offset=0&limit=${TOP_N}`;
-    const res = await fetch(url, {
-      headers: { accept: 'application/json', 'x-chain': 'solana', 'X-API-KEY': BIRDEYE_API_KEY },
-    });
-    if (!res.ok) throw new Error(`Birdeye error ${res.status}: ${await res.text()}`);
-    const json = await res.json();
-    return (json?.data?.tokens || []).map((t) => t.address).filter(Boolean);
+    // Try each key until one works (rotate on error)
+    let lastError = null;
+    
+    for (let attempt = 0; attempt < BIRDEYE_KEYS.length; attempt++) {
+      const apiKey = BIRDEYE_KEYS[birdeyeKeyIndex];
+      
+      try {
+        // Birdeye doesn't support max_market_cap filter, so we fetch and filter client-side
+        const url = `https://public-api.birdeye.so/defi/tokenlist?sort_by=v24hUSD&sort_type=desc&offset=0&limit=${TOP_N}`;
+        const res = await fetch(url, {
+          headers: { accept: 'application/json', 'x-chain': 'solana', 'X-API-KEY': apiKey },
+        });
+        
+        if (!res.ok) {
+          const errorText = await res.text();
+          lastError = new Error(`Birdeye key #${birdeyeKeyIndex + 1} error ${res.status}: ${errorText}`);
+          
+          // Rotate to next key on error
+          birdeyeKeyIndex = (birdeyeKeyIndex + 1) % BIRDEYE_KEYS.length;
+          console.log(`⚠️  ${lastError.message}`);
+          console.log(`🔄 Switching to Birdeye key #${birdeyeKeyIndex + 1}...`);
+          continue;
+        }
+        
+        const json = await res.json();
+        const tokens = (json?.data?.tokens || []);
+        
+        // Filter out major coins (market cap > $100M or blacklisted)
+        const addresses = tokens
+          .filter(t => {
+            // Filter by market cap (exclude major coins)
+            if (t.mc && t.mc > MAX_MEMECOIN_MARKET_CAP) return false;
+            
+            // Filter blacklist
+            if (MAJOR_COIN_BLACKLIST.includes(t.address)) return false;
+            
+            return true;
+          })
+          .map(t => t.address)
+          .filter(Boolean);
+        
+        console.log(`✅ Birdeye key #${birdeyeKeyIndex + 1}: ${tokens.length} tokens fetched, ${addresses.length} after filtering (excluded ${tokens.length - addresses.length} major coins)`);
+        
+        // Rotate to next key for next call (spread load)
+        birdeyeKeyIndex = (birdeyeKeyIndex + 1) % BIRDEYE_KEYS.length;
+        
+        return addresses;
+        
+      } catch (err) {
+        lastError = err;
+        birdeyeKeyIndex = (birdeyeKeyIndex + 1) % BIRDEYE_KEYS.length;
+        console.log(`⚠️  Birdeye key #${birdeyeKeyIndex} fetch error: ${err.message}`);
+        console.log(`🔄 Switching to Birdeye key #${birdeyeKeyIndex + 1}...`);
+      }
+    }
+    
+    // All keys failed
+    throw new Error(`All ${BIRDEYE_KEYS.length} Birdeye keys failed. Last error: ${lastError?.message}`);
   });
 }
 
@@ -1057,6 +1137,21 @@ async function cleanupWatchlist() {
     if (!priceData) {
       // No price data at all = remove
       removed.push(`${addr.substring(0, 8)}... (no data)`);
+      return false;
+    }
+    
+    // FILTER 0: Remove major coins (price > $1)
+    const currentPrice = priceData.recentPrices && priceData.recentPrices.length > 0 
+      ? priceData.recentPrices[priceData.recentPrices.length - 1].price 
+      : 0;
+    if (currentPrice > MAX_MEMECOIN_PRICE) {
+      removed.push(`${addr.substring(0, 8)}... (major coin $${currentPrice.toFixed(2)})`);
+      return false;
+    }
+    
+    // FILTER 0.5: Remove blacklisted addresses
+    if (MAJOR_COIN_BLACKLIST.includes(addr)) {
+      removed.push(`${addr.substring(0, 8)}... (blacklisted)`);
       return false;
     }
     
