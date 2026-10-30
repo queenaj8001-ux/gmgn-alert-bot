@@ -1,6 +1,6 @@
 {
   "name": "gmgn-alert-bot",
-  "version": "42.0.0",
+  "version": "43.0.0",
   "description": "Bot Telegram notifikasi sinyal koin Solana (mirip filter GMGN: volume tinggi lalu deteksi pump-dump)",
   "main": "index.js",
   "scripts": {

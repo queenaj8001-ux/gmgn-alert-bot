@@ -707,7 +707,58 @@ async function refreshGeckoWatchlist() {
 
 // ==================== JUPITER PRICE API (Batch price fetching) ====================
 async function getJupiterPrices(addresses) {
-  if (!addresses || addresses.length === 0) return {};
+  if (!addresses || addresses.length === 0) return {}
+
+async function fetchDexScreenerBatch(addresses) {
+  // Fetch prices from DexScreener for multiple tokens with rate limiting
+  // Replaces Jupiter API to eliminate 429 errors
+  const allResults = {};
+  
+  console.log(`🔍 Fetching ${addresses.length} tokens from DexScreener (batch mode)...`);
+  
+  for (let i = 0; i < addresses.length; i++) {
+    const addr = addresses[i];
+    try {
+      const url = `https://api.dexscreener.com/latest/dex/tokens/${addr}`;
+      const res = await fetch(url);
+      
+      if (!res.ok) {
+        if (res.status === 429) {
+          console.error(`⚠️  DexScreener rate limit hit at token ${i+1}/${addresses.length}`);
+        }
+        continue;
+      }
+      
+      const data = await res.json();
+      if (data.pairs && data.pairs.length > 0) {
+        const pair = data.pairs[0]; // Use first (most liquid) pair
+        allResults[addr] = {
+          id: addr,
+          price: parseFloat(pair.priceUsd || 0),
+          liquidity: pair.liquidity?.usd || 0,
+          volume24h: pair.volume?.h24 || 0,
+          priceChange24h: pair.priceChange?.h24 || 0
+        };
+      }
+      
+      // Rate limiting: 250ms delay between requests (same as armed token checks)
+      // Prevents ban: 240 req/min < 300 limit
+      if (i < addresses.length - 1) {
+        await sleep(250);
+      }
+    } catch (err) {
+      console.error(`DexScreener fetch error for ${addr.substring(0,8)}:`, err.message);
+    }
+  }
+  
+  const fetchedCount = Object.keys(allResults).length;
+  const elapsed = addresses.length * 0.25; // 250ms per token
+  const rate = (addresses.length / elapsed) * 60;
+  console.log(`✅ DexScreener batch: ${fetchedCount}/${addresses.length} tokens in ${elapsed.toFixed(1)}s (~${rate.toFixed(0)} req/min)`);
+  
+  return allResults;
+}
+;
   
   // Jupiter v3 supports up to 100 addresses per request
   const MAX_BATCH = 100;
@@ -1169,7 +1220,7 @@ async function checkPricesOnceInner() {
   console.log(`[${new Date().toISOString()}] Cek harga ${state.watchlist.length} koin di watchlist (Jupiter batch API)...`);
 
   // Fetch ALL prices in one Jupiter API call (up to 100 tokens)
-  const jupiterPrices = await getJupiterPrices(state.watchlist);
+  const jupiterPrices = await fetchDexScreenerBatch(state.watchlist); // v43: DexScreener replaces Jupiter
   
   // Update price tracking for each token
   for (const addr of state.watchlist) {
@@ -1517,7 +1568,7 @@ const pendingWebSocketTokens = new Map(); // mint -> {name, symbol, source, data
 async function shouldAddToWatchlist(mint, tokenInfo = {}) {
   try {
     // Quick Jupiter price check
-    const prices = await getJupiterPrices([mint]);
+    const prices = await fetchDexScreenerBatch([mint]); // v43: DexScreener replaces Jupiter
     const price = prices[mint];
     
     // Validate price is a number
