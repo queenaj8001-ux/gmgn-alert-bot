@@ -248,7 +248,7 @@ function commandHelp() {
 <b>Coming soon:</b>
 /restart - Restart bot
 
-reply += `📊 *Eyescan2 v41.4 - Real-time Solana token signals (WebSocket filter)*\n\n`;
+<i>Eyescan2 v41.4 - Real-time Solana token signals (WebSocket filter)</i>`;
 }
 
 // Command: /status
