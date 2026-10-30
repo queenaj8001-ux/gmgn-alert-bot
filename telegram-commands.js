@@ -253,22 +253,37 @@ function commandHelp() {
 
 // Command: /status
 function commandStatus(state) {
+  // BUGFIX: Reload state from disk to get fresh data
+  // state parameter might be stale (passed once at startup)
+  const fs = require('fs');
+  const path = require('path');
+  const STATE_DIR = process.env.STATE_DIR || path.join(__dirname);
+  const STATE_FILE = path.join(STATE_DIR, 'state.json');
+  
+  let freshState = state;
+  try {
+    const raw = fs.readFileSync(STATE_FILE, 'utf8');
+    freshState = JSON.parse(raw);
+  } catch (err) {
+    console.error('⚠️  /status: Failed to reload state, using passed state:', err.message);
+  }
+  
   const uptime = Math.floor((Date.now() - botStats.startTime) / 1000);
   const uptimeStr = formatUptime(uptime);
   const memUsage = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(1);
   
-  const watchlistCount = state.watchlist ? state.watchlist.length : 0;
-  const pricesTracked = state.prices ? Object.keys(state.prices).length : 0;
-  const armed = state.watchlist ? state.watchlist.filter(addr => {
-    const p = state.prices[addr];
+  const watchlistCount = freshState.watchlist ? freshState.watchlist.length : 0;
+  const pricesTracked = freshState.prices ? Object.keys(freshState.prices).length : 0;
+  const armed = freshState.watchlist ? freshState.watchlist.filter(addr => {
+    const p = freshState.prices[addr];
     return p && (p.maxPrice >= parseFloat(process.env.PRICE_HIGH || 0) || 
                  p.maxPrice >= parseFloat(process.env.PRICE_HIGH_2 || 0));
   }).length : 0;
   
   // Read signal counters from state.json (persists across restarts)
-  const signalsSentToday = state.signalsSentToday || 0;
-  const signalsSent = state.signalsSent || 0;
-  const lastResetDate = state.lastResetDate || 'N/A';
+  const signalsSentToday = freshState.signalsSentToday || 0;
+  const signalsSent = freshState.signalsSent || 0;
+  const lastResetDate = freshState.lastResetDate || 'N/A';
 
   return `📊 <b>Bot Status</b>
 
