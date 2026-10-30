@@ -29,8 +29,8 @@ let birdeyeKeyIndex = 0;
 const PRICE_HIGH = parseFloat(process.env.PRICE_HIGH || '0.0001');
 const PRICE_LOW = parseFloat(process.env.PRICE_LOW || '0.00005');
 
-// Major coins filter - exclude tokens with price > $1 (not memecoins)
-const MAX_MEMECOIN_PRICE = 1.0; // Memecoins rarely exceed $1
+// Major coins filter - exclude tokens with price > $0.10 (not memecoins)
+const MAX_MEMECOIN_PRICE = 0.1; // Lowered from $1 to $0.10 - filter stablecoins/established coins
 const MAX_MEMECOIN_MARKET_CAP = 100000000; // $100M max (exclude major coins like BTC/ETH/SOL)
 
 // Known major coin addresses (always exclude)
