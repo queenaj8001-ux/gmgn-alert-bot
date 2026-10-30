@@ -117,7 +117,8 @@ const MOMENTUM_WINDOW = parseInt(process.env.MOMENTUM_WINDOW || '5', 10);
 const MOMENTUM_FLAT_THRESHOLD_PCT = parseFloat(process.env.MOMENTUM_FLAT_THRESHOLD_PCT || '3');
 
 const TOP_N = parseInt(process.env.TOP_N || '50', 10);
-const GECKO_PAGES = parseInt(process.env.GECKO_PAGES || '1', 10);
+const BIRDEYE_PAGES = parseInt(process.env.BIRDEYE_PAGES || '5', 10); // 5 pages = 250 tokens
+const GECKO_PAGES = parseInt(process.env.GECKO_PAGES || '2', 10); // Increased from 1 to 2
 
 const STATE_DIR = process.env.STATE_DIR || __dirname;
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
@@ -509,64 +510,99 @@ async function getHolderCount(address) {
 // ==================== SUMBER DISCOVERY 1: BIRDEYE ====================
 async function getBirdeyeCandidates() {
   return throttledBirdeye(async () => {
-    // Try each key until one works (rotate on error)
-    let lastError = null;
+    const allAddresses = [];
+    let totalFetched = 0;
+    let totalFiltered = 0;
     
-    for (let attempt = 0; attempt < BIRDEYE_KEYS.length; attempt++) {
-      const apiKey = BIRDEYE_KEYS[birdeyeKeyIndex];
+    // Fetch multiple pages (offset pagination)
+    for (let page = 1; page <= BIRDEYE_PAGES; page++) {
+      const offset = (page - 1) * TOP_N;
       
-      try {
-        // Birdeye doesn't support max_market_cap filter, so we fetch and filter client-side
-        const url = `https://public-api.birdeye.so/defi/tokenlist?sort_by=v24hUSD&sort_type=desc&offset=0&limit=${TOP_N}`;
-        const res = await fetch(url, {
-          headers: { accept: 'application/json', 'x-chain': 'solana', 'X-API-KEY': apiKey },
-        });
+      // Try each key until one works (rotate on error)
+      let lastError = null;
+      let pageSuccess = false;
+      
+      for (let attempt = 0; attempt < BIRDEYE_KEYS.length; attempt++) {
+        const apiKey = BIRDEYE_KEYS[birdeyeKeyIndex];
         
-        if (!res.ok) {
-          const errorText = await res.text();
-          lastError = new Error(`Birdeye key #${birdeyeKeyIndex + 1} error ${res.status}: ${errorText}`);
+        try {
+          const url = `https://public-api.birdeye.so/defi/tokenlist?sort_by=v24hUSD&sort_type=desc&offset=${offset}&limit=${TOP_N}`;
+          const res = await fetch(url, {
+            headers: { accept: 'application/json', 'x-chain': 'solana', 'X-API-KEY': apiKey },
+          });
           
-          // Rotate to next key on error
+          if (!res.ok) {
+            const errorText = await res.text();
+            lastError = new Error(`Birdeye key #${birdeyeKeyIndex + 1} error ${res.status}: ${errorText}`);
+            
+            // Rotate to next key on error
+            birdeyeKeyIndex = (birdeyeKeyIndex + 1) % BIRDEYE_KEYS.length;
+            console.log(`⚠️  Page ${page}: ${lastError.message}`);
+            console.log(`🔄 Switching to Birdeye key #${birdeyeKeyIndex + 1}...`);
+            continue;
+          }
+          
+          const json = await res.json();
+          const tokens = (json?.data?.tokens || []);
+          
+          if (tokens.length === 0) {
+            console.log(`📭 Page ${page}: Empty response, stopping pagination`);
+            pageSuccess = true;
+            break;
+          }
+          
+          // Filter out major coins (market cap > $100M or blacklisted)
+          const addresses = tokens
+            .filter(t => {
+              // Filter by market cap (exclude major coins)
+              if (t.mc && t.mc > MAX_MEMECOIN_MARKET_CAP) return false;
+              
+              // Filter blacklist
+              if (MAJOR_COIN_BLACKLIST.includes(t.address)) return false;
+              
+              return true;
+            })
+            .map(t => t.address)
+            .filter(Boolean);
+          
+          allAddresses.push(...addresses);
+          totalFetched += tokens.length;
+          totalFiltered += addresses.length;
+          
+          console.log(`✅ Birdeye page ${page} (key #${birdeyeKeyIndex + 1}): ${tokens.length} tokens fetched, ${addresses.length} after filtering`);
+          
+          // Rotate to next key for next page (spread load)
           birdeyeKeyIndex = (birdeyeKeyIndex + 1) % BIRDEYE_KEYS.length;
-          console.log(`⚠️  ${lastError.message}`);
+          
+          pageSuccess = true;
+          break;
+          
+        } catch (err) {
+          lastError = err;
+          birdeyeKeyIndex = (birdeyeKeyIndex + 1) % BIRDEYE_KEYS.length;
+          console.log(`⚠️  Page ${page} key #${birdeyeKeyIndex} fetch error: ${err.message}`);
           console.log(`🔄 Switching to Birdeye key #${birdeyeKeyIndex + 1}...`);
-          continue;
         }
-        
-        const json = await res.json();
-        const tokens = (json?.data?.tokens || []);
-        
-        // Filter out major coins (market cap > $100M or blacklisted)
-        const addresses = tokens
-          .filter(t => {
-            // Filter by market cap (exclude major coins)
-            if (t.mc && t.mc > MAX_MEMECOIN_MARKET_CAP) return false;
-            
-            // Filter blacklist
-            if (MAJOR_COIN_BLACKLIST.includes(t.address)) return false;
-            
-            return true;
-          })
-          .map(t => t.address)
-          .filter(Boolean);
-        
-        console.log(`✅ Birdeye key #${birdeyeKeyIndex + 1}: ${tokens.length} tokens fetched, ${addresses.length} after filtering (excluded ${tokens.length - addresses.length} major coins)`);
-        
-        // Rotate to next key for next call (spread load)
-        birdeyeKeyIndex = (birdeyeKeyIndex + 1) % BIRDEYE_KEYS.length;
-        
-        return addresses;
-        
-      } catch (err) {
-        lastError = err;
-        birdeyeKeyIndex = (birdeyeKeyIndex + 1) % BIRDEYE_KEYS.length;
-        console.log(`⚠️  Birdeye key #${birdeyeKeyIndex} fetch error: ${err.message}`);
-        console.log(`🔄 Switching to Birdeye key #${birdeyeKeyIndex + 1}...`);
+      }
+      
+      // If all keys failed for this page, stop pagination
+      if (!pageSuccess) {
+        console.log(`❌ Page ${page}: All ${BIRDEYE_KEYS.length} Birdeye keys failed. Last error: ${lastError?.message}`);
+        break;
+      }
+      
+      // Small delay between pages (rate limit protection)
+      if (page < BIRDEYE_PAGES) {
+        await new Promise(r => setTimeout(r, 500));
       }
     }
     
-    // All keys failed
-    throw new Error(`All ${BIRDEYE_KEYS.length} Birdeye keys failed. Last error: ${lastError?.message}`);
+    // Deduplicate addresses
+    const uniqueAddresses = Array.from(new Set(allAddresses));
+    
+    console.log(`🎯 Birdeye total: ${totalFetched} fetched → ${totalFiltered} after filter → ${uniqueAddresses.length} unique (excluded ${totalFetched - totalFiltered} major coins)`);
+    
+    return uniqueAddresses;
   });
 }
 
@@ -1159,21 +1195,21 @@ async function cleanupWatchlist() {
     const ageMinutes = age / 60000;
     
     // KEEP if:
-    // 1. Fresh (<30 min) - give chance to pump
-    if (ageMinutes < 30) return true;
+    // 1. Fresh (<60 min) - give more chance to pump
+    if (ageMinutes < 60) return true;
     
-    // 2. Has pumped (maxPrice >0) AND not too old (<120 min) - wait for dump signal
-    if (priceData.maxPrice > 0 && ageMinutes < 120) return true;
+    // 2. Has pumped (maxPrice >0) AND not too old (<240 min = 4h) - wait for dump signal
+    if (priceData.maxPrice > 0 && ageMinutes < 240) return true;
     
     // REMOVE if:
-    // 3. Old (>60 min) AND never pumped (maxPrice = 0) - dead token
-    if (ageMinutes > 60 && priceData.maxPrice === 0) {
+    // 3. Old (>120 min = 2h) AND never pumped (maxPrice = 0) - dead token
+    if (ageMinutes > 120 && priceData.maxPrice === 0) {
       removed.push(`${addr.substring(0, 8)}... (${ageMinutes.toFixed(0)}min, never pumped)`);
       return false;
     }
     
-    // 4. Very old (>120 min) - max age limit
-    if (ageMinutes > 120) {
+    // 4. Very old (>240 min = 4h) - max age limit
+    if (ageMinutes > 240) {
       removed.push(`${addr.substring(0, 8)}... (${ageMinutes.toFixed(0)}min, too old)`);
       return false;
     }
