@@ -1430,8 +1430,9 @@ async function shouldAddToWatchlist(mint, tokenInfo = {}) {
     const prices = await getJupiterPrices([mint]);
     const price = prices[mint];
     
-    if (!price || price === 0) {
-      // No price data, add anyway (likely new/unlisted token)
+    // Validate price is a number
+    if (!price || typeof price !== 'number' || isNaN(price) || price === 0) {
+      // No valid price data, add anyway (likely new/unlisted token)
       console.log(`✅ No price data for ${tokenInfo.symbol || mint.substring(0, 8)}, adding (new token)`);
       return true;
     }
