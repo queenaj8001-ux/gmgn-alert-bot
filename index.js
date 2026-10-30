@@ -806,6 +806,33 @@ async function getTokenSnapshot(address, skipAgeCheck = false) {
 async function checkQualityGates(snapshot) {
   const { address, symbol, name, pair: p } = snapshot;
 
+  // SKIP quality gates for Jupiter fallback (minimal data)
+  // Jupiter-only tokens are rugged/delisted, but user should still get signal
+  if (snapshot.source === 'jupiter-fallback') {
+    console.log(`⚠️  Quality gates SKIPPED for ${symbol} (Jupiter fallback - minimal data)`);
+    return {
+      pass: true,
+      alertData: {
+        address, 
+        symbol, 
+        name, 
+        price: snapshot.price, 
+        volume1h: 0,
+        marketCap: 0, 
+        liquidityUsd: 0, 
+        pairUrl: null,
+        dexId: 'unknown',
+        clusterWarning: false,
+        bundleWarning: false,
+        bundlePercentage: null,
+        bundleDataMissing: true,
+        lpBurnedByGraduation: false,
+        heliusBundleCheck: null,
+        heliusBundleData: null
+      }
+    };
+  }
+
   const liquidityUsd = p.liquidity?.usd ?? null;
   if (liquidityUsd == null || liquidityUsd < MIN_LIQUIDITY_FOR_SIGNAL_USD) {
     return { pass: false, reason: `likuiditas $${liquidityUsd ?? 0} (min $${MIN_LIQUIDITY_FOR_SIGNAL_USD})` };
