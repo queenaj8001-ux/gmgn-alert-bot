@@ -1176,6 +1176,14 @@ async function cleanupWatchlist() {
       return false;
     }
     
+    // KEEP if very fresh (<5 min) even without recentPrices
+    // (give time for Jupiter to fetch first price)
+    const tokenAge = now - (priceData.discoveredAt || now);
+    const tokenAgeMinutes = tokenAge / 60000;
+    if (tokenAgeMinutes < 5 && (!priceData.recentPrices || priceData.recentPrices.length === 0)) {
+      return true; // Keep, waiting for first price check
+    }
+    
     // FILTER 0: Remove major coins (price > $1)
     const currentPrice = priceData.recentPrices && priceData.recentPrices.length > 0 
       ? priceData.recentPrices[priceData.recentPrices.length - 1].price 
