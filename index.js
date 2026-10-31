@@ -1455,22 +1455,43 @@ async function checkPricesOnceInner() {
   });
   
   const cachedCount = state.watchlist.length - addressesToFetch.length;
-  console.log(`[v45 CACHE] Watchlist: ${state.watchlist.length} total, ${addressesToFetch.length} fetch, ${cachedCount} cached (75s TTL)`);
+  console.log(`[v45 STAGGERED] Watchlist: ${state.watchlist.length} total, ${addressesToFetch.length} fetch, ${cachedCount} cached`);
   
-  // Fetch only expired/missing entries
+  // v45 STAGGERED: Split into 4 batches (50 tokens each) to avoid rate limit bursts
+  const BATCH_SIZE = 50;
+  const batches = [];
+  for (let i = 0; i < addressesToFetch.length; i += BATCH_SIZE) {
+    batches.push(addressesToFetch.slice(i, i + BATCH_SIZE));
+  }
+  
+  console.log(`[v45 STAGGERED] Split into ${batches.length} batches of max ${BATCH_SIZE} tokens`);
+  
   let jupiterPrices = {};
-  if (addressesToFetch.length > 0) {
-    console.log(`[v45] Fetching ${addressesToFetch.length} tokens from DexScreener...`);
-    jupiterPrices = await fetchDexScreenerBatch(addressesToFetch);
+  
+  // Fetch batches with 30s delay between each
+  for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+    const batch = batches[batchIdx];
+    console.log(`[v45 STAGGERED] Fetching batch ${batchIdx + 1}/${batches.length} (${batch.length} tokens)...`);
+    
+    const batchResults = await fetchDexScreenerBatch(batch);
+    
+    // Merge batch results
+    Object.assign(jupiterPrices, batchResults);
     
     // Update cache with fresh data
-    for (const addr of addressesToFetch) {
-      if (jupiterPrices[addr]) {
+    for (const addr of batch) {
+      if (batchResults[addr]) {
         priceCache.set(addr, {
-          data: jupiterPrices[addr],
+          data: batchResults[addr],
           timestamp: now
         });
       }
+    }
+    
+    // 30s delay between batches (except last batch)
+    if (batchIdx < batches.length - 1) {
+      console.log(`[v45 STAGGERED] Waiting 30s before next batch...`);
+      await sleep(30000);
     }
   }
   
@@ -1484,14 +1505,11 @@ async function checkPricesOnceInner() {
     }
   }
   
-  console.log(`[v45] Processing ${Object.keys(jupiterPrices).length} tokens (fresh + cached)...`);
+  console.log(`[v45 STAGGERED] Processing ${Object.keys(jupiterPrices).length} tokens (fresh + cached)...`);
+  
   // Update price tracking for each token
   for (const addr of state.watchlist) {
     const jupData = jupiterPrices[addr];
-    if (!jupData || !jupData.usdPrice) {
-      // Token not found in Jupiter, skip (might be too new or delisted)
-      continue;
-    }
     
     // Update price tracking in state
     const entry = state.prices[addr] || { maxPrice: 0 };
