@@ -270,7 +270,7 @@ function calculateQualityScore(tokenData) {
 
 // ==================== MAIN CLEANUP FUNCTION ====================
 
-async function cleanupWatchlist(state) {
+async function cleanupWatchlistV45(state) {
   const now = Date.now();
   
   if (now - lastCleanupTime < MIN_CLEANUP_INTERVAL) {
