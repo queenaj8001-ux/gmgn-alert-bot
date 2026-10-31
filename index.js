@@ -1583,6 +1583,7 @@ async function checkPricesOnceInner() {
 
 // ==================== SMART WATCHLIST CLEANUP ====================
 async function cleanupWatchlist() {
+  console.log("🧹 [CLEANUP] Running watchlist cleanup...");
   const now = Date.now();
   const removed = [];
   const initialCount = state.watchlist.length;
