@@ -1510,6 +1510,11 @@ async function checkPricesOnceInner() {
   // Update price tracking for each token
   for (const addr of state.watchlist) {
     const jupData = jupiterPrices[addr];
+
+    // Skip if no data (API failed or token not found)
+    if (!jupData || !jupData.usdPrice) {
+      continue;
+    }
     
     // Update price tracking in state
     const entry = state.prices[addr] || { maxPrice: 0 };
@@ -2555,8 +2560,8 @@ function checkCriteria1And2RealTime(mint, currentPrice, tokenSymbol) {
   setInterval(cleanupWatchlist, 10 * 60 * 1000); // Cleanup every 10 minutes
   
   // Start Telegram command listener (Phase 1: Read-only)
-  const { startCommandListener } = require('./telegram-commands.js');
-  startCommandListener(BOT_TOKEN, state).catch(err => {
-    console.error('❌ Command listener crashed:', err);
-  });
+  // DISABLED (file missing): const { startCommandListener } = require('./telegram-commands.js');
+  // DISABLED: startCommandListener(BOT_TOKEN, state).catch(err => {
+  // DISABLED: console.error('❌ Command listener crashed:', err);
+  // DISABLED: });
 })();
