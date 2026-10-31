@@ -2560,7 +2560,7 @@ function checkCriteria1And2RealTime(mint, currentPrice, tokenSymbol) {
   setInterval(cleanupWatchlist, 10 * 60 * 1000); // Cleanup every 10 minutes
   
   // Start Telegram command listener (Phase 1: Read-only)
-  // DISABLED (file missing): const { startCommandListener } = require('./telegram-commands.js');
+  const { startCommandListener } = require('./telegram-commands.js');
   // DISABLED: startCommandListener(BOT_TOKEN, state).catch(err => {
   // DISABLED: console.error('❌ Command listener crashed:', err);
   // DISABLED: });
