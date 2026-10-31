@@ -2549,6 +2549,20 @@ function checkCriteria1And2RealTime(mint, currentPrice, tokenSymbol) {
   console.log('  - Polling (Birdeye): 45 min (top volume)');
   console.log(`  - Polling (Gecko): ${(GECKO_DISCOVER_INTERVAL_MS / 1000).toFixed(0)} sec (trending backup)\n`);
   
+  // Start Telegram FIRST (before async operations)
+  console.log('🔧 DEBUG: Starting Telegram listener EARLY...');
+  try {
+    delete require.cache[require.resolve('./telegram-commands.js')];
+    const { startCommandListener } = require('./telegram-commands.js');
+    console.log('🔧 DEBUG: Module loaded');
+    startCommandListener(BOT_TOKEN, state).catch(err => {
+      console.error('❌ Telegram error:', err.message);
+    });
+    console.log('🔧 DEBUG: Telegram started');
+  } catch (err) {
+    console.error('❌ FATAL Telegram:', err.message);
+  }
+  
   await refreshBirdeyeWatchlist();
   await refreshGeckoWatchlist();
   await checkPricesOnce();
@@ -2558,10 +2572,4 @@ function checkCriteria1And2RealTime(mint, currentPrice, tokenSymbol) {
   setInterval(fastCheckArmedTokens, FAST_CHECK_INTERVAL_MS);
   setInterval(highRiskCheckArmedTokens, HIGH_RISK_FAST_CHECK_INTERVAL_MS);
   setInterval(cleanupWatchlist, 10 * 60 * 1000); // Cleanup every 10 minutes
-  
-  // Start Telegram command listener (Phase 1: Read-only)
-  const { startCommandListener } = require('./telegram-commands.js');
-  // DISABLED: startCommandListener(BOT_TOKEN, state).catch(err => {
-  // DISABLED: console.error('❌ Command listener crashed:', err);
-  // DISABLED: });
 })();
