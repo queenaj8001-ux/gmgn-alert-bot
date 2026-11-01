@@ -40,6 +40,11 @@ const MAJOR_COIN_BLACKLIST = [
   'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
   'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So', // mSOL
   '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs', // ETH (Wormhole)
+  // 🔧 v46.2: Add detected major coins (high price, re-added after cleanup)
+  'TTWofwAge91oFhZs7kpQdyrVRkmevgM88xijGvQFbKo', // $224 wrapped token
+  '9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump', // $1285 major coin
+  '4kjruqGHDsSqkMdFfCjV7Vb62HPFhtXyWc2t6JpQzDnz', // $223 wrapped token
+  'Ai66LHZG9MCzg1WKdawwqduVAXpNDUuV8M3uyq5ppump', // $204 major coin
   'A7bdiYdS5GgdwjLhcNp8AZnh3WAr8UYRpkFgXAx6mLxS', // ETH (Portal)
   '9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E', // BTC (Portal)
   'cbbtcf3aa2a8a7c4c91987fa4cfc438fc5c87e8f13893cddf5a670d4e8ca9e65', // cbBTC
