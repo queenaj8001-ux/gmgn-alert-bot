@@ -2033,6 +2033,13 @@ function setupMultiHeliusEnhancedWebSocket() {
       
       ws.on('close', () => {
         console.log(`🔌 Helius WebSocket #${keyIndex + 1} closed, reconnecting in 5s...`);
+        
+        // 🔧 v46 STAGE 4: Clear old timeout to prevent memory leak
+        if (reconnectTimeout) {
+          clearTimeout(reconnectTimeout);
+          reconnectTimeout = null;
+        }
+        
         reconnectTimeout = setTimeout(connect, 5000);
       });
     }
@@ -2169,6 +2176,13 @@ function setupHeliusEnhancedWebSocket() {
     
     ws.on('close', () => {
       console.log('🔌 Helius WebSocket closed, reconnecting in 5 seconds...');
+      
+      // 🔧 v46 STAGE 4: Clear old timeout to prevent memory leak
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
+      }
+      
       reconnectTimeout = setTimeout(connect, 5000);
     });
   }
@@ -2323,9 +2337,18 @@ function setupPumpPortalWebSocket() {
     console.error('❌ PumpPortal WebSocket error:', error.message);
   });
   
+  let pumpReconnectTimeout;
+  
   ws.on('close', () => {
     console.log('🔌 PumpPortal WebSocket closed, reconnecting in 5 seconds...');
-    setTimeout(setupPumpPortalWebSocket, 5000);
+    
+    // 🔧 v46 STAGE 4: Clear old timeout to prevent memory leak
+    if (pumpReconnectTimeout) {
+      clearTimeout(pumpReconnectTimeout);
+      pumpReconnectTimeout = null;
+    }
+    
+    pumpReconnectTimeout = setTimeout(setupPumpPortalWebSocket, 5000);
   });
   
   return ws;
@@ -2434,6 +2457,8 @@ function subscribeToTokenSwaps(mint, tokenName, tokenSymbol) {
     console.error(`❌ [v38] WebSocket error for ${tokenSymbol}:`, error.message);
   });
   
+  let tokenReconnectTimeout;
+  
   ws.on('close', () => {
     console.log(`🔌 [v38] WebSocket closed for ${tokenSymbol}`);
     delete tokenWebSockets[mint];
@@ -2444,7 +2469,14 @@ function subscribeToTokenSwaps(mint, tokenName, tokenSymbol) {
       const tokenAge = Date.now() - (tokenData.graduatedAt || tokenData.discoveredAt || 0);
       if (tokenAge < 86400000) {
         console.log(`🔄 [v38] Reconnecting to ${tokenSymbol} in 5 seconds...`);
-        setTimeout(() => subscribeToTokenSwaps(mint, tokenName, tokenSymbol), 5000);
+        
+        // 🔧 v46 STAGE 4: Clear old timeout to prevent memory leak
+        if (tokenReconnectTimeout) {
+          clearTimeout(tokenReconnectTimeout);
+          tokenReconnectTimeout = null;
+        }
+        
+        tokenReconnectTimeout = setTimeout(() => subscribeToTokenSwaps(mint, tokenName, tokenSymbol), 5000);
       }
     }
   });
