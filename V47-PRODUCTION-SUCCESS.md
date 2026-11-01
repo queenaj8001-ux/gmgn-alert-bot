@@ -137,3 +137,36 @@ systemctl --user restart eyescan2-bot
 Built with LINT → TEST → BUILD + RISK ANALYSIS FIRST protocol
 MODE AHLI + PINTAR: Deep audit methodology
 Total findings documented: 107 lines
+
+---
+
+## UPDATE: FRESH START (19:32 WIB)
+
+### Issue Found:
+- V47 first deploy used old state.json (655 tokens from v46.11)
+- 43 armed tokens were >4h old (age limit not cleaning watchlist)
+- Dashboard showed 49 armed, but getArmedAddresses() only returned 6
+
+### Root Cause:
+- Age limit filters signals (correct!) but doesn't cleanup state.watchlist
+- VPS systemctl restart preserves state.json (unlike Railway container reset)
+
+### Solution Applied:
+```bash
+systemctl --user stop eyescan2-bot
+mv state.json state.json.v47-first-run-with-old-data
+systemctl --user start eyescan2-bot
+# Bot creates fresh state.json, starts from 0 tokens
+```
+
+### Result:
+- ✅ Fresh start at 12:32 UTC (19:32 WIB)
+- ✅ Watchlist: 0 → 26 tokens (1 min)
+- ✅ All tokens <2 min old (fresh discovery!)
+- ✅ Armed: 0 (correct - no token old enough)
+- ✅ Behavior matches Railway deployment
+
+### Lesson:
+**VPS deployment needs explicit state.json cleanup for fresh start!**
+
+**Updated at:** 2026-11-01 19:33 WIB
