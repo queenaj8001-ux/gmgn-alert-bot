@@ -849,14 +849,79 @@ function getHighRiskArmedAddresses(armedAddresses) {
   });
 }
 
+// ==================== V47: BATCH FETCH WITH RATE LIMITING ====================
+async function fetchDexScreenerBatch(addresses) {
+  // Fetch prices from DexScreener for multiple tokens with rate limiting
+  // Rate: 250ms delay = 240 req/min (under 300 limit)
+  if (!addresses || addresses.length === 0) return {};
+  
+  const allResults = {};
+  
+  console.log(`🔍 Fetching ${addresses.length} tokens from DexScreener (batch mode)...`);
+  
+  for (let i = 0; i < addresses.length; i++) {
+    const addr = addresses[i];
+    try {
+      const url = `https://api.dexscreener.com/latest/dex/tokens/${addr}`;
+      const res = await fetch(url);
+      
+      if (!res.ok) {
+        if (res.status === 429) {
+          console.error(`⚠️  DexScreener rate limit at token ${i+1}/${addresses.length}`);
+        }
+        continue;
+      }
+      
+      const data = await res.json();
+      if (data.pairs && data.pairs.length > 0) {
+        const pair = data.pairs[0];
+        allResults[addr] = {
+          id: addr,
+          price: parseFloat(pair.priceUsd || 0),
+          liquidity: pair.liquidity?.usd || 0,
+          volume24h: pair.volume?.h24 || 0,
+          priceChange24h: pair.priceChange?.h24 || 0,
+          pairCreatedAt: pair.pairCreatedAt || null // v47: Keep pairCreatedAt for age checks
+        };
+      }
+      
+      // Rate limiting: 250ms delay (240 req/min < 300 limit)
+      if (i < addresses.length - 1) {
+        await sleep(250);
+      }
+    } catch (err) {
+      console.error(`DexScreener fetch error ${addr.substring(0,8)}:`, err.message);
+    }
+  }
+  
+  const fetchedCount = Object.keys(allResults).length;
+  const elapsed = addresses.length * 0.25;
+  const rate = (addresses.length / elapsed) * 60;
+  console.log(`✅ DexScreener batch: ${fetchedCount}/${addresses.length} in ${elapsed.toFixed(1)}s (~${rate.toFixed(0)} req/min)`);
+  
+  return allResults;
+}
+
 let isFastChecking = false;
 async function fastCheckArmedTokens() {
   if (isFastChecking) return;
   const armed = getArmedAddresses();
   if (armed.length === 0) return;
   isFastChecking = true;
+  const startTime = Date.now();
   try {
-    await Promise.all(armed.map((addr) => processOneToken(addr)));
+    console.log(`🔄 Fast check: Processing ${armed.length} armed tokens sequentially...`);
+    // V47: RATE LIMITING - Sequential processing with 250ms delay between requests
+    // Prevents DexScreener ban (300 req/min limit)
+    for (let i = 0; i < armed.length; i++) {
+      await processOneToken(armed[i]);
+      if (i < armed.length - 1) {
+        await sleep(250); // 250ms delay = max 240 req/min (under 300 limit)
+      }
+    }
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const rate = ((armed.length / elapsed) * 60).toFixed(0);
+    console.log(`✅ Fast check complete: ${armed.length} tokens in ${elapsed}s (~${rate} req/min)`);
     saveState(state);
   } finally {
     isFastChecking = false;
@@ -869,8 +934,19 @@ async function highRiskCheckArmedTokens() {
   const highRisk = getHighRiskArmedAddresses(getArmedAddresses());
   if (highRisk.length === 0) return;
   isHighRiskChecking = true;
+  const startTime = Date.now();
   try {
-    await Promise.all(highRisk.map((addr) => processOneToken(addr)));
+    console.log(`⚡ High-risk check: Processing ${highRisk.length} tokens sequentially...`);
+    // V47: RATE LIMITING - Sequential with 250ms delay
+    for (let i = 0; i < highRisk.length; i++) {
+      await processOneToken(highRisk[i]);
+      if (i < highRisk.length - 1) {
+        await sleep(250);
+      }
+    }
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const rate = ((highRisk.length / elapsed) * 60).toFixed(0);
+    console.log(`✅ High-risk check complete: ${highRisk.length} tokens in ${elapsed}s (~${rate} req/min)`);
     saveState(state);
   } finally {
     isHighRiskChecking = false;
