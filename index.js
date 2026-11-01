@@ -874,6 +874,45 @@ function getHighRiskArmedAddresses(armedAddresses) {
   });
 }
 
+// ==================== V47.1: AUTOMATIC CLEANUP ====================
+function cleanupOldTokens() {
+  const now = Date.now();
+  const MAX_AGE_NON_ARMED = 2 * 60 * 60 * 1000; // 2 hours for non-armed tokens
+  const MAX_AGE_ARMED = 4 * 60 * 60 * 1000;     // 4 hours for armed tokens (consistent with getArmedAddresses)
+  
+  const before = state.watchlist.length;
+  
+  state.watchlist = state.watchlist.filter(addr => {
+    const entry = state.prices[addr];
+    if (!entry?.discoveredAt) return true; // Keep if no timestamp (shouldn't happen, but safe)
+    
+    const age = now - entry.discoveredAt;
+    
+    // Check if token is armed (using same logic as getArmedAddresses)
+    const isArmed = entry.maxPrice >= PRICE_HIGH || 
+                    (PRICE_HIGH_2 && entry.maxPrice >= PRICE_HIGH_2);
+    
+    // Armed tokens: max 4h, Non-armed: max 2h
+    const maxAge = isArmed ? MAX_AGE_ARMED : MAX_AGE_NON_ARMED;
+    
+    return age <= maxAge;
+  });
+  
+  // Clean up orphaned prices entries
+  const watchlistSet = new Set(state.watchlist);
+  Object.keys(state.prices).forEach(addr => {
+    if (!watchlistSet.has(addr)) {
+      delete state.prices[addr];
+    }
+  });
+  
+  const removed = before - state.watchlist.length;
+  if (removed > 0) {
+    console.log(`🧹 Cleanup: ${removed} tokens removed (${before} → ${state.watchlist.length})`);
+    saveState(state);
+  }
+}
+
 // ==================== V47: BATCH FETCH WITH RATE LIMITING ====================
 async function fetchDexScreenerBatch(addresses) {
   // Fetch prices from DexScreener for multiple tokens with rate limiting
@@ -1832,6 +1871,10 @@ function checkCriteria1And2RealTime(mint, currentPrice, tokenSymbol) {
   setInterval(checkPricesOnce, CHECK_INTERVAL_MS);
   setInterval(fastCheckArmedTokens, FAST_CHECK_INTERVAL_MS);
   setInterval(highRiskCheckArmedTokens, HIGH_RISK_FAST_CHECK_INTERVAL_MS);
+  
+  // V47.1: Cleanup old tokens every 30 minutes
+  setInterval(cleanupOldTokens, 30 * 60 * 1000); // 30 minutes
+  console.log('🧹 Automatic cleanup enabled: Non-armed tokens max 2h, Armed tokens max 4h, Cycle: 30min');
   
   // Start Telegram command listener (Phase 1: Read-only)
   const { startCommandListener } = require('./telegram-commands.js');
