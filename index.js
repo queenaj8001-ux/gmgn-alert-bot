@@ -895,7 +895,8 @@ function rebuildWatchlist() {
   ]));
   const newPrices = {};
   for (const addr of addresses) {
-    newPrices[addr] = state.prices[addr] || { maxPrice: 0 };
+    // 🔧 v46.5: Set discoveredAt for new tokens from Birdeye/Gecko
+    newPrices[addr] = state.prices[addr] || { maxPrice: 0, discoveredAt: Date.now() };
   }
   state.watchlist = addresses;
   state.prices = newPrices;
