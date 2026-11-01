@@ -897,8 +897,19 @@ function rebuildWatchlist() {
   ]));
   const newPrices = {};
   for (const addr of addresses) {
-    // 🔧 v46.5: Set discoveredAt for new tokens from Birdeye/Gecko
-    newPrices[addr] = state.prices[addr] || { maxPrice: 0, discoveredAt: Date.now() };
+    // 🔧 v46.6: Set discoveredAt for new tokens from Birdeye/Gecko
+    const existing = state.prices[addr];
+    
+    if (existing) {
+      // Preserve existing data BUT fix NULL discoveredAt (old tokens from previous sessions)
+      if (!existing.discoveredAt || existing.discoveredAt === 0) {
+        existing.discoveredAt = Date.now(); // Fix old tokens!
+      }
+      newPrices[addr] = existing;
+    } else {
+      // New token - set discoveredAt
+      newPrices[addr] = { maxPrice: 0, discoveredAt: Date.now() };
+    }
   }
   state.watchlist = addresses;
   state.prices = newPrices;
