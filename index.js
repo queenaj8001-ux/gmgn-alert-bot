@@ -1016,9 +1016,11 @@ async function fetchDexScreenerBatch(addresses) {
         allResults[addr] = {
           id: addr,
           price: parseFloat(pair.priceUsd || 0),
+          usdPrice: parseFloat(pair.priceUsd || 0), // Alias for compatibility
           liquidity: pair.liquidity?.usd || 0,
           volume24h: pair.volume?.h24 || 0,
-          priceChange24h: pair.priceChange?.h24 || 0
+          priceChange24h: pair.priceChange?.h24 || 0,
+          pairCreatedAt: pair.pairCreatedAt || null // 🔧 v46.11: Add pairCreatedAt for discoveredAt update
         };
       }
       
@@ -1545,6 +1547,31 @@ async function checkPricesOnceInner() {
   }
   
   console.log(`[v45 STAGGERED] Processing ${Object.keys(jupiterPrices).length} tokens (fresh + cached)...`);
+  
+  // 🔧 v46.11: CRITICAL - Update discoveredAt for batch-fetched tokens
+  // Problem: Batch fetch bypasses processOneToken where v46.10 updates discoveredAt
+  // Solution: Extract pairCreatedAt from batch results and update discoveredAt here
+  let discoveredAtUpdates = 0;
+  for (const addr of Object.keys(jupiterPrices)) {
+    const jupData = jupiterPrices[addr];
+    const entry = state.prices[addr];
+    
+    // Skip if no entry or no pairCreatedAt in data
+    if (!entry || !jupData || !jupData.pairCreatedAt) continue;
+    
+    // Only update if discoveredAt is placeholder (<120 min old)
+    if (entry.discoveredAt) {
+      const age = (Date.now() - entry.discoveredAt) / 60000;
+      if (age < 120) {
+        entry.discoveredAt = jupData.pairCreatedAt;
+        discoveredAtUpdates++;
+      }
+    }
+  }
+  
+  if (discoveredAtUpdates > 0) {
+    console.log(`🔧 Updated discoveredAt for ${discoveredAtUpdates} tokens from batch data`);
+  }
   
   // Update price tracking for each token
   for (const addr of state.watchlist) {
