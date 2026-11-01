@@ -1605,6 +1605,7 @@ async function cleanupWatchlist() {
   console.log("🧹 [CLEANUP] Running watchlist cleanup...");
   const now = Date.now();
   const removed = [];
+  const removedAddresses = []; // 🔧 v46.7: Track removed CAs for state.prices cleanup
   const initialCount = state.watchlist.length;
   
   state.watchlist = state.watchlist.filter(addr => {
@@ -1639,6 +1640,7 @@ async function cleanupWatchlist() {
     
     if (!hasValidAge) {
       removed.push(`${addr.substring(0, 8)}... (no discoveredAt, corrupt/old data)`);
+      removedAddresses.push(addr); // Track for state.prices cleanup
       return false;
     }
     
@@ -1658,6 +1660,7 @@ async function cleanupWatchlist() {
     // 🔧 v46.6: FIX GAP - Remove dead tokens (never pumped) at 60 min, don't wait 120 min!
     if (ageMinutes >= 60 && priceData.maxPrice === 0) {
       removed.push(`${addr.substring(0, 8)}... (${ageMinutes.toFixed(0)}min, never pumped)`);
+      removedAddresses.push(addr); // Track for state.prices cleanup
       return false;
     }
     
@@ -1668,6 +1671,7 @@ async function cleanupWatchlist() {
     // 3. Very old (>240 min = 4h) - max age limit
     if (ageMinutes > 240) {
       removed.push(`${addr.substring(0, 8)}... (${ageMinutes.toFixed(0)}min, too old)`);
+      removedAddresses.push(addr); // Track for state.prices cleanup
       return false;
     }
     
@@ -1687,14 +1691,15 @@ async function cleanupWatchlist() {
       console.log(`  ... and ${removed.length - 5} more`);
     }
     
+    // 🔧 v46.7: CRITICAL - Delete removed tokens from state.prices
+    // Prevents Birdeye/Gecko from re-adding old tokens with stale data
+    removedAddresses.forEach(ca => {
+      delete state.prices[ca];
+    });
+    console.log(`🧹 [v46.7] Deleted ${removedAddresses.length} tokens from state.prices (prevent re-add)`);
+    
     // 🔧 v46 STAGE 3: Clean priceCache for removed tokens
     let priceCacheCleaned = 0;
-    removed.forEach(entry => {
-      const addr = entry.substring(0, 8) + entry.split('...')[1]; // Extract CA from log string
-      // Better: track removed CAs properly
-    });
-    
-    // Clean priceCache entries NOT in watchlist
     for (const ca of priceCache.keys()) {
       if (!state.watchlist.includes(ca)) {
         priceCache.delete(ca);
