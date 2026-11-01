@@ -846,9 +846,20 @@ async function processOneTokenInner(addr) {
 // Cari token yang sudah "armed" (tinggal tunggu dump) — cek murni dari data di memori,
 // tanpa panggilan API, jadi ringan dipanggil tiap beberapa detik.
 function getArmedAddresses() {
+  const now = Date.now();
+  const MAX_ARMED_AGE_MS = 4 * 60 * 60 * 1000; // V47: 4 hours max (prevent 81 hari bug!)
+  
   return state.watchlist.filter((addr) => {
     const entry = state.prices[addr];
     if (!entry) return false;
+    
+    // V47: Age limit check - Remove tokens >4h old from armed list
+    // Prevents false positives from ancient tokens (81 hari bug in v46.11)
+    if (entry.discoveredAt && (now - entry.discoveredAt) > MAX_ARMED_AGE_MS) {
+      return false; // Too old, not armed anymore
+    }
+    
+    // Original V38.1 armed logic with tier1/tier2
     const pernahCapaiTier1 = (entry.allTimeMaxPrice || 0) >= PRICE_HIGH;
     const armedTier1 = entry.maxPrice >= PRICE_HIGH;
     const armedTier2 = PRICE_HIGH_2 != null && entry.maxPrice >= PRICE_HIGH_2 && !pernahCapaiTier1;
