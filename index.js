@@ -1943,8 +1943,24 @@ function setupMultiHeliusEnhancedWebSocket() {
     function connect() {
       ws = new WebSocket(wsUrl);
       
+      let pingInterval;
+      let pongTimeout;
+      
       ws.on('open', () => {
         console.log(`✅ Helius WebSocket #${keyIndex + 1} connected`);
+        
+        // 🔧 v46 STAGE 5: Start ping-pong heartbeat (detect zombie connections)
+        pingInterval = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.ping();
+            
+            // If no pong after 60s → zombie connection, force close
+            pongTimeout = setTimeout(() => {
+              console.log(`⚠️ Helius WS #${keyIndex + 1}: No pong received, zombie detected!`);
+              ws.terminate();
+            }, 60000);
+          }
+        }, 30000); // Ping every 30s
         
         // Subscribe to ALL DEX programs
         DEX_PROGRAMS.forEach((dex, dexIndex) => {
@@ -2031,8 +2047,26 @@ function setupMultiHeliusEnhancedWebSocket() {
         console.log(`❌ Helius WebSocket #${keyIndex + 1} error: ${err.message}`);
       });
       
+      // 🔧 v46 STAGE 5: Handle pong response (reset timeout)
+      ws.on('pong', () => {
+        if (pongTimeout) {
+          clearTimeout(pongTimeout);
+          pongTimeout = null;
+        }
+      });
+      
       ws.on('close', () => {
         console.log(`🔌 Helius WebSocket #${keyIndex + 1} closed, reconnecting in 5s...`);
+        
+        // 🔧 v46 STAGE 5: Clear ping-pong timers on close
+        if (pingInterval) {
+          clearInterval(pingInterval);
+          pingInterval = null;
+        }
+        if (pongTimeout) {
+          clearTimeout(pongTimeout);
+          pongTimeout = null;
+        }
         
         // 🔧 v46 STAGE 4: Clear old timeout to prevent memory leak
         if (reconnectTimeout) {
