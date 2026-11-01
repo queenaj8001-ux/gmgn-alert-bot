@@ -1661,6 +1661,12 @@ async function cleanupWatchlist() {
       return false;
     }
     
+    // 🔧 v46.4: Remove tokens without discoveredAt (corrupt data, old tokens before tracking)
+    if (!hasValidAge) {
+      removed.push(`${addr.substring(0, 8)}... (no discoveredAt, corrupt/old data)`);
+      return false;
+    }
+    
     return true; // Keep by default
   });
   
