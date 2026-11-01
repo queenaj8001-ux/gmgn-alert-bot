@@ -580,13 +580,27 @@ async function resolvePoolToTokenAddress(pairAddress) {
 
 // ==================== GABUNGKAN WATCHLIST DARI TIGA SUMBER ====================
 function rebuildWatchlist() {
+  // V47: Preserve existing WebSocket tokens (v46.6 critical fix)
+  // Prevents armed tokens from being deleted every 30 sec!
   const addresses = Array.from(new Set([
+    ...state.watchlist,        // ✅ Keep existing WebSocket tokens
     ...state.birdeyeAddresses, 
     ...state.geckoAddresses
   ]));
   const newPrices = {};
   for (const addr of addresses) {
-    newPrices[addr] = state.prices[addr] || { maxPrice: 0 };
+    const existing = state.prices[addr];
+    
+    if (existing) {
+      // Preserve existing data (maxPrice, discoveredAt, etc.)
+      newPrices[addr] = existing;
+    } else {
+      // New token from Birdeye/Gecko - initialize with discoveredAt
+      newPrices[addr] = { 
+        maxPrice: 0, 
+        discoveredAt: Date.now() // V47: Set for new tokens
+      };
+    }
   }
   state.watchlist = addresses;
   state.prices = newPrices;
