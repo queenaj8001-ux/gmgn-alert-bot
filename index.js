@@ -889,7 +889,9 @@ async function resolvePoolToTokenAddress(pairAddress) {
 
 // ==================== GABUNGKAN WATCHLIST DARI TIGA SUMBER ====================
 function rebuildWatchlist() {
+  // 🔧 v46.6: CRITICAL FIX - Preserve WebSocket tokens, don't overwrite!
   const addresses = Array.from(new Set([
+    ...state.watchlist,        // ✅ Keep existing WebSocket tokens
     ...state.birdeyeAddresses, 
     ...state.geckoAddresses
   ]));
@@ -1602,14 +1604,6 @@ async function cleanupWatchlist() {
       return false;
     }
     
-    // KEEP if very fresh (<5 min) even without recentPrices
-    // (give time for Jupiter to fetch first price)
-    const tokenAge = now - (priceData.discoveredAt || now);
-    const tokenAgeMinutes = tokenAge / 60000;
-    if (tokenAgeMinutes < 5 && (!priceData.recentPrices || priceData.recentPrices.length === 0)) {
-      return true; // Keep, waiting for first price check
-    }
-    
     // FILTER 0: Remove major coins (price > $0.10)
     const currentPrice = priceData.recentPrices && priceData.recentPrices.length > 0 
       ? priceData.recentPrices[priceData.recentPrices.length - 1].price 
@@ -1629,19 +1623,29 @@ async function cleanupWatchlist() {
       return false;
     }
     
-    const age = now - (priceData.discoveredAt || now);
+    // 🔧 v46.6: CRITICAL FIX - Check hasValidAge FIRST before any age logic!
+    const hasValidAge = priceData.discoveredAt && priceData.discoveredAt > 0;
+    
+    if (!hasValidAge) {
+      removed.push(`${addr.substring(0, 8)}... (no discoveredAt, corrupt/old data)`);
+      return false;
+    }
+    
+    // All tokens below have VALID discoveredAt
+    const age = now - priceData.discoveredAt;
     const ageMinutes = age / 60000;
     
-    // 🔧 v46.3: Fix age=0 bug (discoveredAt NULL → age=0 → wrongly kept)
-    // If discoveredAt is NULL/0, treat as "old" (don't keep by age logic)
-    const hasValidAge = priceData.discoveredAt && priceData.discoveredAt > 0;
+    // KEEP if very fresh (<5 min) even without recentPrices
+    if (ageMinutes < 5 && (!priceData.recentPrices || priceData.recentPrices.length === 0)) {
+      return true;
+    }
     
     // KEEP if:
     // 1. Fresh (<60 min) - give more chance to pump
-    if (hasValidAge && ageMinutes < 60) return true;
+    if (ageMinutes < 60) return true;
     
     // 2. Has pumped (maxPrice >0) AND not too old (<240 min = 4h) - wait for dump signal
-    if (hasValidAge && priceData.maxPrice > 0 && ageMinutes < 240) return true;
+    if (priceData.maxPrice > 0 && ageMinutes < 240) return true;
     
     // REMOVE if:
     // 3. Old (>120 min = 2h) AND never pumped (maxPrice = 0) - dead token
@@ -1659,12 +1663,6 @@ async function cleanupWatchlist() {
     // 5. Already sent signal - job done
     if (priceData.signalSent) {
       removed.push(`${addr.substring(0, 8)}... (signal sent)`);
-      return false;
-    }
-    
-    // 🔧 v46.4: Remove tokens without discoveredAt (corrupt data, old tokens before tracking)
-    if (!hasValidAge) {
-      removed.push(`${addr.substring(0, 8)}... (no discoveredAt, corrupt/old data)`);
       return false;
     }
     
