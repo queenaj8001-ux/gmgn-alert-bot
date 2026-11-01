@@ -1666,12 +1666,12 @@ async function cleanupWatchlist() {
     });
     
     // Clean priceCache entries NOT in watchlist
-    Object.keys(priceCache).forEach(ca => {
+    for (const ca of priceCache.keys()) {
       if (!state.watchlist.includes(ca)) {
-        delete priceCache[ca];
+        priceCache.delete(ca);
         priceCacheCleaned++;
       }
-    });
+    }
     
     if (priceCacheCleaned > 0) {
       console.log(`🧹 [v46] Cleaned ${priceCacheCleaned} entries from priceCache`);
@@ -1755,7 +1755,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/armed') {
     const armed = getArmedAddresses();
     const armedData = armed.map(ca => {
-      const entry = priceCache[ca] || state.prices[ca] || {};
+      const entry = priceCache.get(ca) || state.prices[ca] || {};
       return {
         ca: ca,
         name: entry.name || 'Unknown',
@@ -1772,6 +1772,7 @@ const server = http.createServer((req, res) => {
       success: true,
       count: armed.length,
       armed: armedData,
+      priceCacheSize: priceCache.size,
       timestamp: new Date().toISOString()
     }));
     return;
