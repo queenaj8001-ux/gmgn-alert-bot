@@ -185,7 +185,7 @@ const GRACE_PERIOD_MINUTES = 10;
 const MIN_CLEANUP_INTERVAL = 10 * 60 * 1000; // 10 minutes
 
 let lastCleanupTime = 0;
-const DRY_RUN = true; // ⚠️ Set false after dry-run verification
+const DRY_RUN = false; // ✅ v46: Cleanup execution enabled
 
 // ==================== CRITERION FUNCTIONS ====================
 
