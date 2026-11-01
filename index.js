@@ -1631,12 +1631,16 @@ async function cleanupWatchlist() {
     const age = now - (priceData.discoveredAt || now);
     const ageMinutes = age / 60000;
     
+    // 🔧 v46.3: Fix age=0 bug (discoveredAt NULL → age=0 → wrongly kept)
+    // If discoveredAt is NULL/0, treat as "old" (don't keep by age logic)
+    const hasValidAge = priceData.discoveredAt && priceData.discoveredAt > 0;
+    
     // KEEP if:
     // 1. Fresh (<60 min) - give more chance to pump
-    if (ageMinutes < 60) return true;
+    if (hasValidAge && ageMinutes < 60) return true;
     
     // 2. Has pumped (maxPrice >0) AND not too old (<240 min = 4h) - wait for dump signal
-    if (priceData.maxPrice > 0 && ageMinutes < 240) return true;
+    if (hasValidAge && priceData.maxPrice > 0 && ageMinutes < 240) return true;
     
     // REMOVE if:
     // 3. Old (>120 min = 2h) AND never pumped (maxPrice = 0) - dead token
