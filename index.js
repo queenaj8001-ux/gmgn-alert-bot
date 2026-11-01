@@ -782,6 +782,7 @@ async function getBirdeyeCandidates() {
           }
           
           // Filter out major coins (market cap > $100M or blacklisted)
+          const now = Date.now();
           const addresses = tokens
             .filter(t => {
               // Filter by market cap (exclude major coins)
@@ -789,6 +790,11 @@ async function getBirdeyeCandidates() {
               
               // Filter blacklist
               if (MAJOR_COIN_BLACKLIST.includes(t.address)) return false;
+              
+              // 🔧 v46.8: CRITICAL - Filter by age (4-120 min) like WebSocket/Gecko
+              // Birdeye doesn't provide pairCreatedAt, so fetch from DexScreener
+              // For now, skip this check (will be filtered at discovery time)
+              // TODO: Add DexScreener pairCreatedAt check here for optimization
               
               return true;
             })
@@ -1304,6 +1310,20 @@ async function processOneTokenInner(addr) {
   state.prices[addr] = entry; // tulis balik SEGERA — supaya referensi konsisten dipakai
                                // fungsi lain (mis. checkQualityGates) di siklus yang sama,
                                // menghindari data bundle/rugcheck "tidak terlihat" sesaat
+  
+  // 🔧 v46.8: FIX #7 - Set discoveredAt to REAL pairCreatedAt (not Date.now placeholder)
+  // Problem: Birdeye tokens get discoveredAt=NOW, bot thinks old tokens are fresh
+  // Solution: Update discoveredAt to pairCreatedAt when we fetch DexScreener data
+  if (snapshot.pairCreatedAt && entry.discoveredAt) {
+    const age = (Date.now() - entry.discoveredAt) / 60000; // minutes since placeholder set
+    const isPlaceholder = age < 10; // placeholder set <10 min ago (fresh from Birdeye/Gecko)
+    
+    if (isPlaceholder) {
+      entry.discoveredAt = snapshot.pairCreatedAt; // Update to REAL age!
+      console.log(`🔧 Updated discoveredAt for ${addr.substring(0,8)}: placeholder → real pairCreatedAt`);
+    }
+  }
+  
   if (snapshot.price > entry.maxPrice) entry.maxPrice = snapshot.price;
 
   // Penanda PERMANEN (tidak pernah direset oleh sinyal manapun) — apakah token ini
