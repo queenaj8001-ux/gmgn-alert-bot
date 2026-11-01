@@ -1657,6 +1657,26 @@ async function cleanupWatchlist() {
     if (removed.length > 5) {
       console.log(`  ... and ${removed.length - 5} more`);
     }
+    
+    // 🔧 v46 STAGE 3: Clean priceCache for removed tokens
+    let priceCacheCleaned = 0;
+    removed.forEach(entry => {
+      const addr = entry.substring(0, 8) + entry.split('...')[1]; // Extract CA from log string
+      // Better: track removed CAs properly
+    });
+    
+    // Clean priceCache entries NOT in watchlist
+    Object.keys(priceCache).forEach(ca => {
+      if (!state.watchlist.includes(ca)) {
+        delete priceCache[ca];
+        priceCacheCleaned++;
+      }
+    });
+    
+    if (priceCacheCleaned > 0) {
+      console.log(`🧹 [v46] Cleaned ${priceCacheCleaned} entries from priceCache`);
+    }
+    
     saveState(state);
   }
 }
