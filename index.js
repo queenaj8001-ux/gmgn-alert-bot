@@ -1604,12 +1604,16 @@ async function cleanupWatchlist() {
       return true; // Keep, waiting for first price check
     }
     
-    // FILTER 0: Remove major coins (price > $1)
+    // FILTER 0: Remove major coins (price > $0.10)
     const currentPrice = priceData.recentPrices && priceData.recentPrices.length > 0 
       ? priceData.recentPrices[priceData.recentPrices.length - 1].price 
       : 0;
-    if (currentPrice > MAX_MEMECOIN_PRICE) {
-      removed.push(`${addr.substring(0, 8)}... (major coin $${currentPrice.toFixed(2)})`);
+    
+    // 🔧 v46.1: Also check maxPrice (for tokens with empty recentPrices)
+    const checkPrice = Math.max(currentPrice, priceData.maxPrice || 0);
+    
+    if (checkPrice > MAX_MEMECOIN_PRICE) {
+      removed.push(`${addr.substring(0, 8)}... (major coin $${checkPrice.toFixed(2)})`);
       return false;
     }
     
