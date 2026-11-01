@@ -10,45 +10,8 @@ const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const CHANNEL_ID = process.env.TELEGRAM_CHANNEL_ID || ''; // Channel untuk Hermes monitor
 const BIRDEYE_API_KEY = process.env.BIRDEYE_API_KEY;
 
-// Multi Birdeye API keys for rotation (10 keys)
-const BIRDEYE_KEYS = [
-  process.env.BIRDEYE_API_KEY,
-  process.env.BIRDEYE_API_KEY_2,
-  process.env.BIRDEYE_API_KEY_3,
-  process.env.BIRDEYE_API_KEY_4,
-  process.env.BIRDEYE_API_KEY_5,
-  process.env.BIRDEYE_API_KEY_6,
-  process.env.BIRDEYE_API_KEY_7,
-  process.env.BIRDEYE_API_KEY_8,
-  process.env.BIRDEYE_API_KEY_9,
-  process.env.BIRDEYE_API_KEY_10,
-].filter(Boolean);
-
-let birdeyeKeyIndex = 0;
-
 const PRICE_HIGH = parseFloat(process.env.PRICE_HIGH || '0.0001');
 const PRICE_LOW = parseFloat(process.env.PRICE_LOW || '0.00005');
-
-// Major coins filter - exclude tokens with price > $0.10 (not memecoins)
-const MAX_MEMECOIN_PRICE = 0.1; // Lowered from $1 to $0.10 - filter stablecoins/established coins
-const MAX_MEMECOIN_MARKET_CAP = 100000000; // $100M max (exclude major coins like BTC/ETH/SOL)
-
-// Known major coin addresses (always exclude)
-const MAJOR_COIN_BLACKLIST = [
-  'So11111111111111111111111111111111111112', // SOL
-  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
-  'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So', // mSOL
-  '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs', // ETH (Wormhole)
-  // 🔧 v46.2: Add detected major coins (high price, re-added after cleanup)
-  'TTWofwAge91oFhZs7kpQdyrVRkmevgM88xijGvQFbKo', // $224 wrapped token
-  '9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump', // $1285 major coin
-  '4kjruqGHDsSqkMdFfCjV7Vb62HPFhtXyWc2t6JpQzDnz', // $223 wrapped token
-  'Ai66LHZG9MCzg1WKdawwqduVAXpNDUuV8M3uyq5ppump', // $204 major coin
-  'A7bdiYdS5GgdwjLhcNp8AZnh3WAr8UYRpkFgXAx6mLxS', // ETH (Portal)
-  '9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E', // BTC (Portal)
-  'cbbtcf3aa2a8a7c4c91987fa4cfc438fc5c87e8f13893cddf5a670d4e8ca9e65', // cbBTC
-];
 
 // Kriteria KEDUA (opsional): untuk pump yang lebih moderat, minta bukti dump yang JAUH
 // lebih dalam sebelum dianggap sinyal valid. Kalau harga ternyata terus naik sampai
@@ -122,13 +85,12 @@ const MOMENTUM_WINDOW = parseInt(process.env.MOMENTUM_WINDOW || '5', 10);
 const MOMENTUM_FLAT_THRESHOLD_PCT = parseFloat(process.env.MOMENTUM_FLAT_THRESHOLD_PCT || '3');
 
 const TOP_N = parseInt(process.env.TOP_N || '50', 10);
-const BIRDEYE_PAGES = parseInt(process.env.BIRDEYE_PAGES || '5', 10); // 5 pages = 250 tokens
-const GECKO_PAGES = parseInt(process.env.GECKO_PAGES || '2', 10); // Increased from 1 to 2
+const GECKO_PAGES = parseInt(process.env.GECKO_PAGES || '1', 10);
 
 const STATE_DIR = process.env.STATE_DIR || __dirname;
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
 
-console.log('gmgn-alert-bot — versi 2026-10-29-v41 (Jupiter Price API + Smart Cleanup)');
+console.log('gmgn-alert-bot — versi 2026-10-20-v38 (Real-time Criteria 1 Detection)');
 console.log(`Discovery Birdeye: tiap ${(BIRDEYE_DISCOVER_INTERVAL_MS / 60000).toFixed(0)} menit. Discovery GeckoTerminal: tiap ${(GECKO_DISCOVER_INTERVAL_MS / 1000).toFixed(0)} detik. Cek harga: tiap ${(CHECK_INTERVAL_MS / 1000).toFixed(0)} detik.`);
 
 if (!BOT_TOKEN || !CHAT_ID || !BIRDEYE_API_KEY) {
@@ -145,20 +107,9 @@ function loadState() {
       prices: raw.prices || {},
       birdeyeAddresses: raw.birdeyeAddresses || [],
       geckoAddresses: raw.geckoAddresses || [],
-      signalsSent: raw.signalsSent || 0,
-      signalsSentToday: raw.signalsSentToday || 0,
-      lastResetDate: raw.lastResetDate || new Date().toISOString().split('T')[0],
     };
   } catch {
-    return { 
-      watchlist: [], 
-      prices: {}, 
-      birdeyeAddresses: [], 
-      geckoAddresses: [], 
-      signalsSent: 0,
-      signalsSentToday: 0,
-      lastResetDate: new Date().toISOString().split('T')[0],
-    };
+    return { watchlist: [], prices: {}, birdeyeAddresses: [], geckoAddresses: [] };
   }
 }
 function saveState(state) {
@@ -172,231 +123,6 @@ function sleep(ms) {
 }
 
 // ==================== ANTREAN KHUSUS BIRDEYE & RUGCHECK ====================
-// ==================== v45 CLEANUP SYSTEM (CORRECTED FOR v43 STATE STRUCTURE) ====================
-
-// Price cache for watchlist (75s TTL)
-const priceCache = new Map(); // { tokenAddress: { price, timestamp, data } }
-const CACHE_TTL_MS = 75 * 1000; // 75 seconds
-
-// Cleanup configuration
-const MAX_WATCHLIST_AGE_MINUTES = 90;
-const MIN_VOLUME_24H_USD = 500;
-const FLAT_PRICE_DURATION_MINUTES = 30;
-const HIGH_RUG_SCORE_THRESHOLD = 60;
-const MIN_HOLDERS_THRESHOLD = 50;
-const LIQUIDITY_DROP_PERCENT = 20;
-const MIN_WATCHLIST_SIZE = 50;
-const GRACE_PERIOD_MINUTES = 10;
-const MIN_CLEANUP_INTERVAL = 10 * 60 * 1000; // 10 minutes
-
-let lastCleanupTime = 0;
-const DRY_RUN = false; // ✅ v46: Cleanup execution enabled
-
-// ==================== CRITERION FUNCTIONS ====================
-
-function isTokenTooOld(tokenData) {
-  if (!tokenData || !tokenData.discoveredAt) return false;
-  const ageMinutes = (Date.now() - tokenData.discoveredAt) / 60000;
-  if (ageMinutes < GRACE_PERIOD_MINUTES) return false;
-  return ageMinutes > MAX_WATCHLIST_AGE_MINUTES;
-}
-
-function hasLowVolume(tokenData) {
-  return tokenData && tokenData.volume24h && tokenData.volume24h < MIN_VOLUME_24H_USD;
-}
-
-function isPriceFlat(tokenData, minutes = FLAT_PRICE_DURATION_MINUTES) {
-  if (!tokenData || !tokenData.recentPrices) return false;
-  const history = tokenData.recentPrices || [];
-  const cutoff = Date.now() - (minutes * 60 * 1000);
-  const recent = history.filter(p => p.t > cutoff);
-  if (recent.length < 3) return false;
-  const firstPrice = recent[0].price;
-  return recent.every(p => Math.abs(p.price - firstPrice) < 0.000001);
-}
-
-function hasHighRugRisk(tokenData) {
-  return tokenData && tokenData.rugCheckScore && tokenData.rugCheckScore > HIGH_RUG_SCORE_THRESHOLD;
-}
-
-function hasLowHolders(tokenData) {
-  return tokenData && tokenData.holders && tokenData.holders < MIN_HOLDERS_THRESHOLD;
-}
-
-function hasLiquidityDrop(tokenData, percentThreshold = LIQUIDITY_DROP_PERCENT) {
-  if (!tokenData || !tokenData.liquidityHistory) return false;
-  const history = tokenData.liquidityHistory || [];
-  if (history.length < 2) return false;
-  const oldLiq = history[history.length - 2].value;
-  const newLiq = history[history.length - 1].value;
-  if (oldLiq === 0) return false;
-  const dropPercent = ((oldLiq - newLiq) / oldLiq) * 100;
-  return dropPercent > percentThreshold;
-}
-
-// ==================== QUALITY SCORING ====================
-
-function calculateQualityScore(tokenData) {
-  if (!tokenData) return 0;
-  let score = 0;
-  
-  const vol = tokenData.volume24h || 0;
-  if (vol > 50000) score += 30;
-  else if (vol > 10000) score += 20;
-  else if (vol > 5000) score += 15;
-  else if (vol > 1000) score += 10;
-  else if (vol > 500) score += 5;
-  
-  const liq = tokenData.liquidity || 0;
-  if (liq > 20000) score += 25;
-  else if (liq > 10000) score += 20;
-  else if (liq > 5000) score += 15;
-  else if (liq > 2000) score += 10;
-  else score += 5;
-  
-  const holders = tokenData.holders || 0;
-  if (holders > 500) score += 20;
-  else if (holders > 200) score += 15;
-  else if (holders > 100) score += 10;
-  else if (holders > 50) score += 5;
-  
-  const mcap = tokenData.marketCap || 0;
-  if (mcap > 100000 && mcap < 10000000) score += 15;
-  else if (mcap > 50000) score += 10;
-  else if (mcap > 10000) score += 5;
-  
-  const rugScore = tokenData.rugCheckScore || 100;
-  if (rugScore < 30) score += 10;
-  else if (rugScore < 50) score += 7;
-  else if (rugScore < 70) score += 5;
-  
-  return score;
-}
-
-// ==================== MAIN CLEANUP FUNCTION ====================
-
-async function cleanupWatchlistV45(state) {
-  const now = Date.now();
-  
-  if (now - lastCleanupTime < MIN_CLEANUP_INTERVAL) {
-    const timeSince = ((now - lastCleanupTime) / 1000).toFixed(0);
-    console.log(`⏭️ Cleanup too soon, skipping (${timeSince}s since last)`);
-    return;
-  }
-  
-  if (state.watchlist.length < MIN_WATCHLIST_SIZE) {
-    console.log(`⚠️ Watchlist too small (${state.watchlist.length}), skipping cleanup`);
-    return;
-  }
-  
-  console.log(`\n🧹 ===== v45 CLEANUP START =====`);
-  console.log(`📊 Before: ${state.watchlist.length} tokens`);
-  
-  const removalReasons = { tooOld: 0, lowVolume: 0, flatPrice: 0, highRug: 0, lowHolders: 0, liquidityDrop: 0 };
-  const addressesToRemove = [];
-  
-  // Iterate over watchlist array, check token data in prices object
-  for (const address of state.watchlist) {
-    const tokenData = state.prices[address];
-    if (!tokenData) continue; // Skip if no price data
-    
-    let shouldRemove = false;
-    let reason = "";
-    
-    if (isTokenTooOld(tokenData)) {
-      shouldRemove = true; reason = "too old"; removalReasons.tooOld++;
-    } else if (hasLowVolume(tokenData)) {
-      shouldRemove = true; reason = "low volume"; removalReasons.lowVolume++;
-    } else if (isPriceFlat(tokenData)) {
-      shouldRemove = true; reason = "flat price"; removalReasons.flatPrice++;
-    } else if (hasHighRugRisk(tokenData)) {
-      shouldRemove = true; reason = "high rug"; removalReasons.highRug++;
-    } else if (hasLowHolders(tokenData)) {
-      shouldRemove = true; reason = "low holders"; removalReasons.lowHolders++;
-    } else if (hasLiquidityDrop(tokenData)) {
-      shouldRemove = true; reason = "liquidity drop"; removalReasons.liquidityDrop++;
-    }
-    
-    if (shouldRemove) {
-      const age = tokenData.discoveredAt ? ((now - tokenData.discoveredAt) / 60000).toFixed(0) : "?";
-      addressesToRemove.push({ 
-        address, 
-        reason, 
-        symbol: tokenData.symbol || address.slice(0,8),
-        age,
-        vol: tokenData.volume24h || 0
-      });
-    }
-  }
-  
-  console.log(`📋 Tokens to remove: ${addressesToRemove.length}`);
-  console.log(`Reasons: Old=${removalReasons.tooOld}, Vol=${removalReasons.lowVolume}, Flat=${removalReasons.flatPrice}, Rug=${removalReasons.highRug}, Holders=${removalReasons.lowHolders}, Liq=${removalReasons.liquidityDrop}`);
-  
-  if (DRY_RUN) {
-    console.log(`\n🧪 [DRY-RUN] Would remove ${addressesToRemove.length} tokens:`);
-    addressesToRemove.slice(0, 10).forEach(item => {
-      console.log(`  ❌ ${item.symbol}: ${item.reason} (age: ${item.age}m, vol: $${item.vol.toFixed(0)})`);
-    });
-    if (addressesToRemove.length > 10) console.log(`  ... and ${addressesToRemove.length - 10} more`);
-    console.log(`🧪 [DRY-RUN] Set DRY_RUN=false to execute removal`);
-  } else {
-    // Actually remove from BOTH watchlist array AND prices object
-    for (const item of addressesToRemove) {
-      const index = state.watchlist.indexOf(item.address);
-      if (index > -1) state.watchlist.splice(index, 1);
-      delete state.prices[item.address];
-    }
-    console.log(`✅ Removed ${addressesToRemove.length} tokens`);
-  }
-  
-  console.log(`📊 After: ${state.watchlist.length} tokens`);
-  
-  if (state.watchlist.length > 150) {
-    console.log(`\n⚠️ Still ${state.watchlist.length} > 150. Using quality scoring...`);
-    await keepTopTokens(state, 150);
-  }
-  
-  lastCleanupTime = now;
-  console.log(`🧹 ===== CLEANUP COMPLETE =====\n`);
-}
-
-// ==================== KEEP TOP N BY QUALITY ====================
-
-async function keepTopTokens(state, maxTokens) {
-  if (state.watchlist.length <= maxTokens) return;
-  
-  console.log(`🎯 Scoring ${state.watchlist.length} tokens...`);
-  
-  const scored = state.watchlist.map(addr => {
-    const tokenData = state.prices[addr];
-    const score = tokenData ? calculateQualityScore(tokenData) : 0;
-    return { address: addr, tokenData, score };
-  });
-  
-  scored.sort((a, b) => b.score - a.score);
-  const toKeep = scored.slice(0, maxTokens);
-  const toRemove = scored.slice(maxTokens);
-  
-  console.log(`📈 Top 5:`);
-  toKeep.slice(0, 5).forEach((item, i) => {
-    const symbol = item.tokenData?.symbol || item.address.slice(0,8);
-    console.log(`${i+1}. ${symbol} (score: ${item.score})`);
-  });
-  
-  if (DRY_RUN) {
-    console.log(`🧪 [DRY-RUN] Would remove ${toRemove.length} low-score tokens`);
-  } else {
-    for (const item of toRemove) {
-      const index = state.watchlist.indexOf(item.address);
-      if (index > -1) state.watchlist.splice(index, 1);
-      delete state.prices[item.address];
-    }
-    console.log(`✅ Kept top ${toKeep.length} by quality`);
-  }
-}
-
-console.log("✅ v45 Cleanup System Loaded (DRY_RUN=" + DRY_RUN + ")");
-
 function makeThrottledQueue(minSpacingMs) {
   let queue = Promise.resolve();
   return function throttled(fn) {
@@ -504,19 +230,13 @@ function computeMomentum(recentPrices) {
 
 // ==================== TELEGRAM ====================
 async function sendTelegramAlert({ symbol, name, address, price, volume1h, marketCap, liquidityUsd, pairUrl, dexId, momentum, tierLabel, clusterWarning, bundleWarning, bundlePercentage, bundleDataMissing, lpBurnedByGraduation, heliusBundleCheck, heliusBundleData }) {
-  // Increment signal counter (persist to state.json)
-  // Check if date changed (midnight passed) - reset daily counter
-  const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-  if (state.lastResetDate !== today) {
-    console.log(`📅 Date changed: ${state.lastResetDate} → ${today}. Resetting daily counter.`);
-    state.signalsSentToday = 0;
-    state.lastResetDate = today;
+  // Increment signal counter for /status command
+  try {
+    const { incrementSignalCount } = require('./telegram-commands.js');
+    incrementSignalCount();
+  } catch (err) {
+    // Ignore if module not loaded yet
   }
-  
-  // Increment both counters
-  state.signalsSent = (state.signalsSent || 0) + 1;
-  state.signalsSentToday = (state.signalsSentToday || 0) + 1;
-  saveState(state);
   const mcText = marketCap != null ? `$${Number(marketCap).toLocaleString('en-US')}` : 'Data tidak tersedia';
   const risky = liquidityUsd == null || liquidityUsd < LIQUIDITY_MIN_USD;
   const riskLine = risky ? `\n⚠️ RISIKO LIKUIDITAS TINGGI` : '';
@@ -570,6 +290,34 @@ async function sendTelegramAlert({ symbol, name, address, price, volume1h, marke
     momentumLine + `\n` +
     (pairUrl ? `Chart: ${pairUrl}` : '');
 
+  // Generate chart (optional - only if generate_chart.py exists)
+  let chartPath = null;
+  try {
+    const { execSync } = require('child_process');
+    const fs = require('fs');
+    
+    // Check if chart generator exists
+    const chartScriptPath = __dirname + '/generate_chart.py';
+    if (fs.existsSync(chartScriptPath)) {
+      // Generate chart (1-hour candlestick)
+      const outputPath = `/tmp/chart_${address}.png`;
+      const chartTitle = `${symbol} - Price Chart (1h)`;
+      
+      execSync(
+        `python3 ${chartScriptPath} ${address} --hours 1 --output ${outputPath} --title "${chartTitle}"`,
+        { timeout: 10000 } // 10s timeout
+      );
+      
+      if (fs.existsSync(outputPath)) {
+        chartPath = outputPath;
+        console.log(`✅ Chart generated: ${chartPath}`);
+      }
+    }
+  } catch (chartError) {
+    console.log(`⚠️ Chart generation skipped: ${chartError.message}`);
+    // Continue without chart (not critical)
+  }
+
   const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
   
   // Kirim ke chat pribadi
@@ -580,6 +328,35 @@ async function sendTelegramAlert({ symbol, name, address, price, volume1h, marke
   });
   if (!res.ok) {
     console.error('Gagal kirim notifikasi Telegram (chat pribadi):', await res.text());
+  }
+  
+  // Send chart as photo (if generated)
+  if (chartPath) {
+    try {
+      const FormData = require('form-data');
+      const fs = require('fs');
+      const form = new FormData();
+      form.append('chat_id', CHAT_ID);
+      form.append('photo', fs.createReadStream(chartPath));
+      form.append('caption', `📊 ${symbol} - 1-hour candlestick chart`);
+      
+      const photoUrl = `https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`;
+      const photoRes = await fetch(photoUrl, {
+        method: 'POST',
+        body: form
+      });
+      
+      if (photoRes.ok) {
+        console.log(`✅ Chart sent to Telegram: ${symbol}`);
+      } else {
+        console.error('❌ Chart send failed:', await photoRes.text());
+      }
+      
+      // Cleanup temp file
+      fs.unlinkSync(chartPath);
+    } catch (photoError) {
+      console.error('❌ Chart send error:', photoError.message);
+    }
   }
   
   // Kirim ke channel juga (kalau CHANNEL_ID ada)
@@ -740,105 +517,13 @@ async function getHolderCount(address) {
 // ==================== SUMBER DISCOVERY 1: BIRDEYE ====================
 async function getBirdeyeCandidates() {
   return throttledBirdeye(async () => {
-    const allAddresses = [];
-    let totalFetched = 0;
-    let totalFiltered = 0;
-    
-    // Fetch multiple pages (offset pagination)
-    for (let page = 1; page <= BIRDEYE_PAGES; page++) {
-      const offset = (page - 1) * TOP_N;
-      
-      // Try each key until one works (rotate on error)
-      let lastError = null;
-      let pageSuccess = false;
-      
-      for (let attempt = 0; attempt < BIRDEYE_KEYS.length; attempt++) {
-        const apiKey = BIRDEYE_KEYS[birdeyeKeyIndex];
-        
-        try {
-          const url = `https://public-api.birdeye.so/defi/tokenlist?sort_by=v24hUSD&sort_type=desc&offset=${offset}&limit=${TOP_N}`;
-          const res = await fetch(url, {
-            headers: { accept: 'application/json', 'x-chain': 'solana', 'X-API-KEY': apiKey },
-          });
-          
-          if (!res.ok) {
-            const errorText = await res.text();
-            lastError = new Error(`Birdeye key #${birdeyeKeyIndex + 1} error ${res.status}: ${errorText}`);
-            
-            // Rotate to next key on error
-            birdeyeKeyIndex = (birdeyeKeyIndex + 1) % BIRDEYE_KEYS.length;
-            console.log(`⚠️  Page ${page}: ${lastError.message}`);
-            console.log(`🔄 Switching to Birdeye key #${birdeyeKeyIndex + 1}...`);
-            continue;
-          }
-          
-          const json = await res.json();
-          const tokens = (json?.data?.tokens || []);
-          
-          if (tokens.length === 0) {
-            console.log(`📭 Page ${page}: Empty response, stopping pagination`);
-            pageSuccess = true;
-            break;
-          }
-          
-          // Filter out major coins (market cap > $100M or blacklisted)
-          const now = Date.now();
-          const addresses = tokens
-            .filter(t => {
-              // Filter by market cap (exclude major coins)
-              if (t.mc && t.mc > MAX_MEMECOIN_MARKET_CAP) return false;
-              
-              // Filter blacklist
-              if (MAJOR_COIN_BLACKLIST.includes(t.address)) return false;
-              
-              // 🔧 v46.8: CRITICAL - Filter by age (4-120 min) like WebSocket/Gecko
-              // Birdeye doesn't provide pairCreatedAt, so fetch from DexScreener
-              // For now, skip this check (will be filtered at discovery time)
-              // TODO: Add DexScreener pairCreatedAt check here for optimization
-              
-              return true;
-            })
-            .map(t => t.address)
-            .filter(Boolean);
-          
-          allAddresses.push(...addresses);
-          totalFetched += tokens.length;
-          totalFiltered += addresses.length;
-          
-          console.log(`✅ Birdeye page ${page} (key #${birdeyeKeyIndex + 1}): ${tokens.length} tokens fetched, ${addresses.length} after filtering`);
-          
-          // Rotate to next key for next page (spread load)
-          birdeyeKeyIndex = (birdeyeKeyIndex + 1) % BIRDEYE_KEYS.length;
-          
-          pageSuccess = true;
-          break;
-          
-        } catch (err) {
-          lastError = err;
-          birdeyeKeyIndex = (birdeyeKeyIndex + 1) % BIRDEYE_KEYS.length;
-          console.log(`⚠️  Page ${page} key #${birdeyeKeyIndex} fetch error: ${err.message}`);
-          console.log(`🔄 Switching to Birdeye key #${birdeyeKeyIndex + 1}...`);
-        }
-      }
-      
-      // If all keys failed for this page, stop pagination
-      if (!pageSuccess) {
-        console.log(`❌ Page ${page}: All ${BIRDEYE_KEYS.length} Birdeye keys failed. Last error: ${lastError?.message}`);
-        break;
-      }
-      
-      // Small delay between pages (rate limit protection)
-      if (page < BIRDEYE_PAGES) {
-        await new Promise(r => setTimeout(r, 500));
-      }
-    }
-    
-    // Deduplicate addresses
-    const uniqueAddresses = Array.from(new Set(allAddresses));
-    
-    console.log(`🎯 Birdeye total: ${totalFetched} fetched → ${totalFiltered} after filter → ${uniqueAddresses.length} unique (excluded ${totalFetched - totalFiltered} major coins)`);
-    
-    return uniqueAddresses;
+    const url = `https://public-api.birdeye.so/defi/tokenlist?sort_by=v24hUSD&sort_type=desc&offset=0&limit=${TOP_N}`;
+    const res = await fetch(url, {
+      headers: { accept: 'application/json', 'x-chain': 'solana', 'X-API-KEY': BIRDEYE_API_KEY },
+    });
+    if (!res.ok) throw new Error(`Birdeye error ${res.status}: ${await res.text()}`);
+    const json = await res.json();
+    return (json?.data?.tokens || []).map((t) => t.address).filter(Boolean);
   });
 }
 
@@ -895,7 +580,8 @@ async function resolvePoolToTokenAddress(pairAddress) {
 
 // ==================== GABUNGKAN WATCHLIST DARI TIGA SUMBER ====================
 function rebuildWatchlist() {
-  // 🔧 v46.6: CRITICAL FIX - Preserve WebSocket tokens, don't overwrite!
+  // V47: Preserve existing WebSocket tokens (v46.6 critical fix)
+  // Prevents armed tokens from being deleted every 30 sec!
   const addresses = Array.from(new Set([
     ...state.watchlist,        // ✅ Keep existing WebSocket tokens
     ...state.birdeyeAddresses, 
@@ -903,18 +589,17 @@ function rebuildWatchlist() {
   ]));
   const newPrices = {};
   for (const addr of addresses) {
-    // 🔧 v46.6: Set discoveredAt for new tokens from Birdeye/Gecko
     const existing = state.prices[addr];
     
     if (existing) {
-      // Preserve existing data BUT fix NULL discoveredAt (old tokens from previous sessions)
-      if (!existing.discoveredAt || existing.discoveredAt === 0) {
-        existing.discoveredAt = Date.now(); // Fix old tokens!
-      }
+      // Preserve existing data (maxPrice, discoveredAt, etc.)
       newPrices[addr] = existing;
     } else {
-      // New token - set discoveredAt
-      newPrices[addr] = { maxPrice: 0, discoveredAt: Date.now() };
+      // New token from Birdeye/Gecko - initialize with discoveredAt
+      newPrices[addr] = { 
+        maxPrice: 0, 
+        discoveredAt: Date.now() // V47: Set for new tokens
+      };
     }
   }
   state.watchlist = addresses;
@@ -955,129 +640,8 @@ async function refreshGeckoWatchlist() {
 // REMOVED: refreshDexScreenerWatchlist() - Redundant discovery layer
 // Using: Multi-Helius + PumpPortal + Gecko only
 
-// ==================== JUPITER PRICE API (Batch price fetching) ====================
-async function getJupiterPrices(addresses) {
-  if (!addresses || addresses.length === 0) return {};
-  
-  // Jupiter v3 supports up to 100 addresses per request
-  const MAX_BATCH = 100;
-  const batches = [];
-  for (let i = 0; i < addresses.length; i += MAX_BATCH) {
-    batches.push(addresses.slice(i, i + MAX_BATCH));
-  }
-  
-  const allResults = {};
-  
-  for (const batch of batches) {
-    try {
-      const url = `https://api.jup.ag/price/v3?ids=${batch.join(',').trim()}`;
-      const res = await fetch(url);
-      
-      if (!res.ok) {
-        console.error(`Jupiter API error: ${res.status}`);
-        continue;
-      }
-      
-      const data = await res.json();
-      Object.assign(allResults, data);
-    } catch (err) {
-      console.error('Jupiter API fetch error:', err.message);
-    }
-  }
-  
-  return allResults;
-}
-
-async function fetchDexScreenerBatch(addresses) {
-  // Fetch prices from DexScreener for multiple tokens with rate limiting
-  // Replaces Jupiter API to eliminate 429 errors
-  if (!addresses || addresses.length === 0) return {};
-  
-  const allResults = {};
-  
-  console.log(`🔍 Fetching ${addresses.length} tokens from DexScreener (batch mode)...`);
-  
-  for (let i = 0; i < addresses.length; i++) {
-    const addr = addresses[i];
-    try {
-      const url = `https://api.dexscreener.com/latest/dex/tokens/${addr}`;
-      const res = await fetch(url);
-      
-      if (!res.ok) {
-        if (res.status === 429) {
-          console.error(`⚠️  DexScreener rate limit at token ${i+1}/${addresses.length}`);
-        }
-        continue;
-      }
-      
-      const data = await res.json();
-      if (data.pairs && data.pairs.length > 0) {
-        const pair = data.pairs[0];
-        allResults[addr] = {
-          id: addr,
-          price: parseFloat(pair.priceUsd || 0),
-          usdPrice: parseFloat(pair.priceUsd || 0), // Alias for compatibility
-          liquidity: pair.liquidity?.usd || 0,
-          volume24h: pair.volume?.h24 || 0,
-          priceChange24h: pair.priceChange?.h24 || 0,
-          pairCreatedAt: pair.pairCreatedAt || null // 🔧 v46.11: Add pairCreatedAt for discoveredAt update
-        };
-      }
-      
-      // Rate limiting: 250ms delay (240 req/min < 300 limit)
-      if (i < addresses.length - 1) {
-        await sleep(250);
-      }
-    } catch (err) {
-      console.error(`DexScreener fetch error ${addr.substring(0,8)}:`, err.message);
-    }
-  }
-  
-  const fetchedCount = Object.keys(allResults).length;
-  const elapsed = addresses.length * 0.25;
-  const rate = (addresses.length / elapsed) * 60;
-  console.log(`✅ DexScreener batch: ${fetchedCount}/${addresses.length} in ${elapsed.toFixed(1)}s (~${rate.toFixed(0)} req/min)`);
-  
-  return allResults;
-}
-
-
-// Fetch token data from Birdeye (for signal checks when DexScreener unavailable)
-async function getBirdeyeTokenData(address) {
-  try {
-    const url = `https://public-api.birdeye.so/defi/token_overview?address=${address}`;
-    const res = await fetch(url, {
-      headers: { 
-        accept: 'application/json', 
-        'x-chain': 'solana', 
-        'X-API-KEY': BIRDEYE_API_KEY 
-      },
-    });
-    
-    if (!res.ok) return null;
-    const json = await res.json();
-    const data = json.data;
-    if (!data) return null;
-    
-    return {
-      address,
-      symbol: data.symbol || '?',
-      name: data.name || '?',
-      price: data.price || 0,
-      liquidity: data.liquidity || 0,
-      marketCap: data.mc || 0,
-      volume24h: data.v24hUSD || 0,
-      volume1h: data.v1hUSD || 0,
-      priceChange24h: data.priceChange24hPercent || 0,
-    };
-  } catch (err) {
-    console.error(`Birdeye fetch error for ${address.substring(0,8)}:`, err.message);
-    return null;
-  }
-}
-
 // ==================== TAHAP 1: snapshot harga (gate STABIL saja) ====================
-async function getTokenSnapshot(address, skipAgeCheck = false) {
+async function getTokenSnapshot(address) {
   const url = `https://api.dexscreener.com/latest/dex/tokens/${address}`;
   const res = await fetch(url);
   if (!res.ok) return null;
@@ -1093,8 +657,7 @@ async function getTokenSnapshot(address, skipAgeCheck = false) {
 
   if (!p.pairCreatedAt) return null;
   const ageMinutes = (Date.now() - p.pairCreatedAt) / 60000;
-  // Skip age check for tokens already in watchlist (called from signal detection)
-  if (!skipAgeCheck && (ageMinutes < MIN_TOKEN_AGE_MINUTES || ageMinutes > MAX_TOKEN_AGE_MINUTES)) return null;
+  if (ageMinutes < MIN_TOKEN_AGE_MINUTES || ageMinutes > MAX_TOKEN_AGE_MINUTES) return null;
 
   const priceNum = parseFloat(p.priceUsd);
   if (!p.priceUsd || Number.isNaN(priceNum)) return null;
@@ -1109,33 +672,6 @@ async function getTokenSnapshot(address, skipAgeCheck = false) {
 // ==================== TAHAP 2: filter kualitas (gate FLUKTUATIF — dicek cuma saat sinyal) ====================
 async function checkQualityGates(snapshot) {
   const { address, symbol, name, pair: p } = snapshot;
-
-  // SKIP quality gates for Jupiter fallback (minimal data)
-  // Jupiter-only tokens are rugged/delisted, but user should still get signal
-  if (snapshot.source === 'jupiter-fallback') {
-    console.log(`⚠️  Quality gates SKIPPED for ${symbol} (Jupiter fallback - minimal data)`);
-    return {
-      pass: true,
-      alertData: {
-        address, 
-        symbol, 
-        name, 
-        price: snapshot.price, 
-        volume1h: 0,
-        marketCap: 0, 
-        liquidityUsd: 0, 
-        pairUrl: null,
-        dexId: 'unknown',
-        clusterWarning: false,
-        bundleWarning: false,
-        bundlePercentage: null,
-        bundleDataMissing: true,
-        lpBurnedByGraduation: false,
-        heliusBundleCheck: null,
-        heliusBundleData: null
-      }
-    };
-  }
 
   const liquidityUsd = p.liquidity?.usd ?? null;
   if (liquidityUsd == null || liquidityUsd < MIN_LIQUIDITY_FOR_SIGNAL_USD) {
@@ -1154,18 +690,10 @@ async function checkQualityGates(snapshot) {
 
   const txnsH1 = p.txns?.h1;
   const txnCount = txnsH1 ? (txnsH1.buys || 0) + (txnsH1.sells || 0) : 0;
-  
-  // Skip txn check for Birdeye source (doesn't provide txn counts)
-  if (snapshot.source !== 'birdeye' && txnCount === 0) {
-    return { pass: false, reason: 'volume ada tapi transaksi 0 (data tidak konsisten)' };
-  }
-  
-  // Calculate avg trade size only if txn data available
-  if (txnCount > 0) {
-    const avgTradeSize = volume1h / txnCount;
-    if (avgTradeSize < MIN_AVG_TRADE_SIZE_USD) {
-      return { pass: false, reason: `rata-rata transaksi $${avgTradeSize.toFixed(2)} dari ${txnCount}x (min $${MIN_AVG_TRADE_SIZE_USD})` };
-    }
+  if (txnCount === 0) return { pass: false, reason: 'volume ada tapi transaksi 0 (data tidak konsisten)' };
+  const avgTradeSize = volume1h / txnCount;
+  if (avgTradeSize < MIN_AVG_TRADE_SIZE_USD) {
+    return { pass: false, reason: `rata-rata transaksi $${avgTradeSize.toFixed(2)} dari ${txnCount}x (min $${MIN_AVG_TRADE_SIZE_USD})` };
   }
 
   const cached = state.prices[address] || {};
@@ -1237,95 +765,17 @@ async function processOneToken(addr) {
 async function processOneTokenInner(addr) {
   let snapshot;
   try {
-    // Try DexScreener first, fallback to Birdeye if banned
-    snapshot = await getTokenSnapshot(addr, true);
-    
-    // If DexScreener fails (likely banned), try Birdeye
-    if (!snapshot) {
-      console.log(`📡 DexScreener failed for ${addr.substring(0,8)}, trying Birdeye...`);
-      const birdeyeData = await getBirdeyeTokenData(addr);
-      if (birdeyeData) {
-        // Convert Birdeye format to snapshot format
-        snapshot = {
-          address: addr,
-          symbol: birdeyeData.symbol,
-          name: birdeyeData.name,
-          price: birdeyeData.price,
-          pair: {
-            liquidity: { usd: birdeyeData.liquidity },
-            marketCap: birdeyeData.marketCap,
-            fdv: birdeyeData.marketCap,
-            volume: { 
-              h1: birdeyeData.volume1h,
-              h24: birdeyeData.volume24h
-            },
-            txns: { h1: { buys: 1, sells: 1 } }, // Birdeye doesn't provide txn counts, use placeholder
-            priceUsd: birdeyeData.price.toString(),
-            baseToken: {
-              symbol: birdeyeData.symbol,
-              name: birdeyeData.name
-            }
-          },
-          source: 'birdeye'
-        };
-        console.log(`✅ Birdeye data retrieved: liq=$${birdeyeData.liquidity} vol1h=$${birdeyeData.volume1h}`);
-      }
-    }
+    snapshot = await getTokenSnapshot(addr);
   } catch (err) {
     console.error(`Gagal ambil data ${addr}:`, err.message);
     return;
   }
-  
-  // FALLBACK: If DexScreener/Birdeye failed, use Jupiter price data we already have
-  if (!snapshot) {
-    const entry = state.prices[addr];
-    if (entry && entry.recentPrices && entry.recentPrices.length > 0) {
-      const latest = entry.recentPrices[entry.recentPrices.length - 1];
-      console.log(`⚠️  DexScreener & Birdeye failed for ${addr.substring(0,8)}, using Jupiter price data`);
-      
-      // Create minimal snapshot from existing data
-      snapshot = {
-        address: addr,
-        symbol: entry.symbol || addr.substring(0, 8),
-        name: entry.name || 'Unknown',
-        price: latest.price,
-        pair: {
-          liquidity: { usd: 0 }, // Unknown, but allow signal
-          marketCap: 0,
-          fdv: 0,
-          volume: { h1: 0, h24: 0 },
-          txns: { h1: { buys: 0, sells: 0 } },
-          priceUsd: latest.price.toString(),
-          baseToken: {
-            symbol: entry.symbol || addr.substring(0, 8),
-            name: entry.name || 'Unknown'
-          }
-        },
-        source: 'jupiter-fallback'
-      };
-    } else {
-      return; // No data at all, skip
-    }
-  }
+  if (!snapshot) return;
 
   const entry = state.prices[addr] || { maxPrice: 0 };
   state.prices[addr] = entry; // tulis balik SEGERA — supaya referensi konsisten dipakai
                                // fungsi lain (mis. checkQualityGates) di siklus yang sama,
                                // menghindari data bundle/rugcheck "tidak terlihat" sesaat
-  
-  // 🔧 v46.8: FIX #7 - Set discoveredAt to REAL pairCreatedAt (not Date.now placeholder)
-  // Problem: Birdeye tokens get discoveredAt=NOW, bot thinks old tokens are fresh
-  // Solution: Update discoveredAt to pairCreatedAt when we fetch DexScreener data
-  if (snapshot.pair && snapshot.pair.pairCreatedAt && entry.discoveredAt) {
-    const age = (Date.now() - entry.discoveredAt) / 60000; // minutes since placeholder set
-    const isPlaceholder = age < 120; // placeholder set <120 min ago (allow all tokens <2h to update)
-    
-    if (isPlaceholder) {
-      entry.discoveredAt = snapshot.pair.pairCreatedAt; // Update to REAL age!
-      console.log(`🔧 Updated discoveredAt for ${addr.substring(0,8)}: placeholder → real pairCreatedAt (age now ${((Date.now() - snapshot.pair.pairCreatedAt) / 60000).toFixed(0)} min)`);
-    }
-  }
-  
   if (snapshot.price > entry.maxPrice) entry.maxPrice = snapshot.price;
 
   // Penanda PERMANEN (tidak pernah direset oleh sinyal manapun) — apakah token ini
@@ -1385,7 +835,6 @@ async function processOneTokenInner(addr) {
       entry.maxPrice = snapshot.price;
       entry.recentPrices = [];
       entry.touchedTier2Zone = false;
-      entry.signalSent = true; // Mark signal sent for cleanup
     } else {
       console.log(`Sinyal tertunda (kriteria ${tierLabel}): ${snapshot.symbol} (${addr}) — ${quality.reason}`);
     }
@@ -1397,9 +846,20 @@ async function processOneTokenInner(addr) {
 // Cari token yang sudah "armed" (tinggal tunggu dump) — cek murni dari data di memori,
 // tanpa panggilan API, jadi ringan dipanggil tiap beberapa detik.
 function getArmedAddresses() {
+  const now = Date.now();
+  const MAX_ARMED_AGE_MS = 4 * 60 * 60 * 1000; // V47: 4 hours max (prevent 81 hari bug!)
+  
   return state.watchlist.filter((addr) => {
     const entry = state.prices[addr];
     if (!entry) return false;
+    
+    // V47: Age limit check - Remove tokens >4h old from armed list
+    // Prevents false positives from ancient tokens (81 hari bug in v46.11)
+    if (entry.discoveredAt && (now - entry.discoveredAt) > MAX_ARMED_AGE_MS) {
+      return false; // Too old, not armed anymore
+    }
+    
+    // Original V38.1 armed logic with tier1/tier2
     const pernahCapaiTier1 = (entry.allTimeMaxPrice || 0) >= PRICE_HIGH;
     const armedTier1 = entry.maxPrice >= PRICE_HIGH;
     const armedTier2 = PRICE_HIGH_2 != null && entry.maxPrice >= PRICE_HIGH_2 && !pernahCapaiTier1;
@@ -1414,6 +874,59 @@ function getHighRiskArmedAddresses(armedAddresses) {
   });
 }
 
+// ==================== V47: BATCH FETCH WITH RATE LIMITING ====================
+async function fetchDexScreenerBatch(addresses) {
+  // Fetch prices from DexScreener for multiple tokens with rate limiting
+  // Rate: 250ms delay = 240 req/min (under 300 limit)
+  if (!addresses || addresses.length === 0) return {};
+  
+  const allResults = {};
+  
+  console.log(`🔍 Fetching ${addresses.length} tokens from DexScreener (batch mode)...`);
+  
+  for (let i = 0; i < addresses.length; i++) {
+    const addr = addresses[i];
+    try {
+      const url = `https://api.dexscreener.com/latest/dex/tokens/${addr}`;
+      const res = await fetch(url);
+      
+      if (!res.ok) {
+        if (res.status === 429) {
+          console.error(`⚠️  DexScreener rate limit at token ${i+1}/${addresses.length}`);
+        }
+        continue;
+      }
+      
+      const data = await res.json();
+      if (data.pairs && data.pairs.length > 0) {
+        const pair = data.pairs[0];
+        allResults[addr] = {
+          id: addr,
+          price: parseFloat(pair.priceUsd || 0),
+          liquidity: pair.liquidity?.usd || 0,
+          volume24h: pair.volume?.h24 || 0,
+          priceChange24h: pair.priceChange?.h24 || 0,
+          pairCreatedAt: pair.pairCreatedAt || null // v47: Keep pairCreatedAt for age checks
+        };
+      }
+      
+      // Rate limiting: 250ms delay (240 req/min < 300 limit)
+      if (i < addresses.length - 1) {
+        await sleep(250);
+      }
+    } catch (err) {
+      console.error(`DexScreener fetch error ${addr.substring(0,8)}:`, err.message);
+    }
+  }
+  
+  const fetchedCount = Object.keys(allResults).length;
+  const elapsed = addresses.length * 0.25;
+  const rate = (addresses.length / elapsed) * 60;
+  console.log(`✅ DexScreener batch: ${fetchedCount}/${addresses.length} in ${elapsed.toFixed(1)}s (~${rate.toFixed(0)} req/min)`);
+  
+  return allResults;
+}
+
 let isFastChecking = false;
 async function fastCheckArmedTokens() {
   if (isFastChecking) return;
@@ -1423,7 +936,7 @@ async function fastCheckArmedTokens() {
   const startTime = Date.now();
   try {
     console.log(`🔄 Fast check: Processing ${armed.length} armed tokens sequentially...`);
-    // RATE LIMITING: Sequential processing with 250ms delay between requests
+    // V47: RATE LIMITING - Sequential processing with 250ms delay between requests
     // Prevents DexScreener ban (300 req/min limit)
     for (let i = 0; i < armed.length; i++) {
       await processOneToken(armed[i]);
@@ -1449,12 +962,11 @@ async function highRiskCheckArmedTokens() {
   const startTime = Date.now();
   try {
     console.log(`⚡ High-risk check: Processing ${highRisk.length} tokens sequentially...`);
-    // RATE LIMITING: Sequential processing with 250ms delay between requests
-    // Prevents DexScreener ban (300 req/min limit)
+    // V47: RATE LIMITING - Sequential with 250ms delay
     for (let i = 0; i < highRisk.length; i++) {
       await processOneToken(highRisk[i]);
       if (i < highRisk.length - 1) {
-        await sleep(250); // 250ms delay = max 240 req/min (under 300 limit)
+        await sleep(250);
       }
     }
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -1484,282 +996,15 @@ async function checkPricesOnceInner() {
     console.log('Watchlist masih kosong, tunggu refresh pertama selesai...');
     return;
   }
-  
-  const now = Date.now();
-  
-  // v45: Filter watchlist - only fetch expired cache entries (75s TTL)
-  const addressesToFetch = state.watchlist.filter(addr => {
-    const cached = priceCache.get(addr);
-    if (!cached) return true; // Not in cache, fetch
-    if (now - cached.timestamp > CACHE_TTL_MS) return true; // Expired, fetch
-    return false; // Still valid, skip
-  });
-  
-  const cachedCount = state.watchlist.length - addressesToFetch.length;
-  console.log(`[v45 STAGGERED] Watchlist: ${state.watchlist.length} total, ${addressesToFetch.length} fetch, ${cachedCount} cached`);
-  
-  // v45 STAGGERED: Split into 4 batches (50 tokens each) to avoid rate limit bursts
-  const BATCH_SIZE = 50;
-  const batches = [];
-  for (let i = 0; i < addressesToFetch.length; i += BATCH_SIZE) {
-    batches.push(addressesToFetch.slice(i, i + BATCH_SIZE));
-  }
-  
-  console.log(`[v45 STAGGERED] Split into ${batches.length} batches of max ${BATCH_SIZE} tokens`);
-  
-  let jupiterPrices = {};
-  
-  // Fetch batches with 30s delay between each
-  for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
-    const batch = batches[batchIdx];
-    console.log(`[v45 STAGGERED] Fetching batch ${batchIdx + 1}/${batches.length} (${batch.length} tokens)...`);
-    
-    const batchResults = await fetchDexScreenerBatch(batch);
-    
-    // Merge batch results
-    Object.assign(jupiterPrices, batchResults);
-    
-    // Update cache with fresh data
-    for (const addr of batch) {
-      if (batchResults[addr]) {
-        priceCache.set(addr, {
-          data: batchResults[addr],
-          timestamp: now
-        });
-      }
-    }
-    
-    // 30s delay between batches (except last batch)
-    if (batchIdx < batches.length - 1) {
-      console.log(`[v45 STAGGERED] Waiting 30s before next batch...`);
-      await sleep(30000);
-    }
-  }
-  
-  // Merge cached data for tokens not fetched
-  for (const addr of state.watchlist) {
-    if (!addressesToFetch.includes(addr)) {
-      const cached = priceCache.get(addr);
-      if (cached && cached.data) {
-        jupiterPrices[addr] = cached.data;
-      }
-    }
-  }
-  
-  console.log(`[v45 STAGGERED] Processing ${Object.keys(jupiterPrices).length} tokens (fresh + cached)...`);
-  
-  // 🔧 v46.11: CRITICAL - Update discoveredAt for batch-fetched tokens
-  // Problem: Batch fetch bypasses processOneToken where v46.10 updates discoveredAt
-  // Solution: Extract pairCreatedAt from batch results and update discoveredAt here
-  let discoveredAtUpdates = 0;
-  for (const addr of Object.keys(jupiterPrices)) {
-    const jupData = jupiterPrices[addr];
-    const entry = state.prices[addr];
-    
-    // Skip if no entry or no pairCreatedAt in data
-    if (!entry || !jupData || !jupData.pairCreatedAt) continue;
-    
-    // Only update if discoveredAt is placeholder (<120 min old)
-    if (entry.discoveredAt) {
-      const age = (Date.now() - entry.discoveredAt) / 60000;
-      if (age < 120) {
-        entry.discoveredAt = jupData.pairCreatedAt;
-        discoveredAtUpdates++;
-      }
-    }
-  }
-  
-  if (discoveredAtUpdates > 0) {
-    console.log(`🔧 Updated discoveredAt for ${discoveredAtUpdates} tokens from batch data`);
-  }
-  
-  // Update price tracking for each token
-  for (const addr of state.watchlist) {
-    const jupData = jupiterPrices[addr];
+  console.log(`[${new Date().toISOString()}] Cek harga ${state.watchlist.length} koin di watchlist (batch ${BATCH_SIZE})...`);
 
-    // Skip if no data (API failed or token not found)
-    if (!jupData || !jupData.usdPrice) {
-      continue;
-    }
-    
-    // Update price tracking in state
-    const entry = state.prices[addr] || { maxPrice: 0 };
-    state.prices[addr] = entry;
-    
-    const currentPrice = jupData.usdPrice;
-    
-    // Filter out major coins (price > $1 = not memecoin)
-    if (currentPrice > MAX_MEMECOIN_PRICE) {
-      continue; // Skip SOL, BTC, ETH, USDC, etc.
-    }
-    
-    // Update maxPrice if current price is higher
-    if (currentPrice > entry.maxPrice) {
-      entry.maxPrice = currentPrice;
-    }
-    
-    // Track all-time max price (for tier logic)
-    entry.allTimeMaxPrice = Math.max(entry.allTimeMaxPrice || 0, currentPrice);
-    
-    // Update recent prices for momentum calculation
-    entry.recentPrices = entry.recentPrices || [];
-    entry.recentPrices.push({ price: currentPrice, t: Date.now() });
-    if (entry.recentPrices.length > MOMENTUM_WINDOW) {
-      entry.recentPrices = entry.recentPrices.slice(-MOMENTUM_WINDOW);
-    }
-    
-    // Store Jupiter liquidity data (bonus!)
-    if (jupData.liquidity != null) {
-      entry.jupiterLiquidity = jupData.liquidity;
-    }
-    
-    // Mark if price crossed tier 2 zone (for tier 1 eligibility)
-    if (PRICE_HIGH_2 != null && currentPrice >= PRICE_HIGH_2 && currentPrice < PRICE_HIGH) {
-      entry.touchedTier2Zone = true;
-    }
-    
-    // Check if token is armed (crossed threshold)
-    const pernahCapaiTier1 = entry.allTimeMaxPrice >= PRICE_HIGH;
-    const passedThroughTier2Zone = PRICE_HIGH_2 == null || entry.touchedTier2Zone === true;
-    const sudahMelambungTier1 = entry.maxPrice >= PRICE_HIGH && passedThroughTier2Zone;
-    const sudahMelambungTier2 = PRICE_HIGH_2 != null && entry.maxPrice >= PRICE_HIGH_2 && !pernahCapaiTier1;
-    
-    let dumpThreshold = null;
-    let tierLabel = null;
-    if (sudahMelambungTier1) {
-      dumpThreshold = PRICE_LOW;
-      tierLabel = '1';
-    } else if (sudahMelambungTier2) {
-      dumpThreshold = PRICE_LOW_2;
-      tierLabel = '2';
-    }
-    
-    const sudahTurun = dumpThreshold != null && currentPrice <= dumpThreshold;
-    
-    // If dump detected, call full check with DexScreener for complete data
-    if (dumpThreshold != null && sudahTurun) {
-      console.log(`🔍 DUMP DETECTED: ${addr.substring(0,8)}... maxPrice=$${entry.maxPrice} current=$${currentPrice} threshold=$${dumpThreshold}`);
-      // Call existing processOneToken for full quality check
-      await processOneToken(addr);
-    }
+  for (let i = 0; i < state.watchlist.length; i += BATCH_SIZE) {
+    const batch = state.watchlist.slice(i, i + BATCH_SIZE);
+    await Promise.all(batch.map((addr) => processOneToken(addr)));
+    await sleep(50);
   }
 
   saveState(state);
-}
-
-// ==================== SMART WATCHLIST CLEANUP ====================
-async function cleanupWatchlist() {
-  console.log("🧹 [CLEANUP] Running watchlist cleanup...");
-  const now = Date.now();
-  const removed = [];
-  const removedAddresses = []; // 🔧 v46.7: Track removed CAs for state.prices cleanup
-  const initialCount = state.watchlist.length;
-  
-  state.watchlist = state.watchlist.filter(addr => {
-    const priceData = state.prices[addr];
-    if (!priceData) {
-      // No price data at all = remove
-      removed.push(`${addr.substring(0, 8)}... (no data)`);
-      return false;
-    }
-    
-    // FILTER 0: Remove major coins (price > $0.10)
-    const currentPrice = priceData.recentPrices && priceData.recentPrices.length > 0 
-      ? priceData.recentPrices[priceData.recentPrices.length - 1].price 
-      : 0;
-    
-    // 🔧 v46.1: Also check maxPrice (for tokens with empty recentPrices)
-    const checkPrice = Math.max(currentPrice, priceData.maxPrice || 0);
-    
-    if (checkPrice > MAX_MEMECOIN_PRICE) {
-      removed.push(`${addr.substring(0, 8)}... (major coin $${checkPrice.toFixed(2)})`);
-      return false;
-    }
-    
-    // FILTER 0.5: Remove blacklisted addresses
-    if (MAJOR_COIN_BLACKLIST.includes(addr)) {
-      removed.push(`${addr.substring(0, 8)}... (blacklisted)`);
-      return false;
-    }
-    
-    // 🔧 v46.6: CRITICAL FIX - Check hasValidAge FIRST before any age logic!
-    const hasValidAge = priceData.discoveredAt && priceData.discoveredAt > 0;
-    
-    if (!hasValidAge) {
-      removed.push(`${addr.substring(0, 8)}... (no discoveredAt, corrupt/old data)`);
-      removedAddresses.push(addr); // Track for state.prices cleanup
-      return false;
-    }
-    
-    // All tokens below have VALID discoveredAt
-    const age = now - priceData.discoveredAt;
-    const ageMinutes = age / 60000;
-    
-    // KEEP if very fresh (<5 min) even without recentPrices
-    if (ageMinutes < 5 && (!priceData.recentPrices || priceData.recentPrices.length === 0)) {
-      return true;
-    }
-    
-    // KEEP if:
-    // 1. Fresh (<60 min) - give more chance to pump
-    if (ageMinutes < 60) return true;
-    
-    // 🔧 v46.6: FIX GAP - Remove dead tokens (never pumped) at 60 min, don't wait 120 min!
-    if (ageMinutes >= 60 && priceData.maxPrice === 0) {
-      removed.push(`${addr.substring(0, 8)}... (${ageMinutes.toFixed(0)}min, never pumped)`);
-      removedAddresses.push(addr); // Track for state.prices cleanup
-      return false;
-    }
-    
-    // 2. Has pumped (maxPrice >0) AND not too old (<240 min = 4h) - wait for dump signal
-    if (priceData.maxPrice > 0 && ageMinutes < 240) return true;
-    
-    // REMOVE if:
-    // 3. Very old (>240 min = 4h) - max age limit
-    if (ageMinutes > 240) {
-      removed.push(`${addr.substring(0, 8)}... (${ageMinutes.toFixed(0)}min, too old)`);
-      removedAddresses.push(addr); // Track for state.prices cleanup
-      return false;
-    }
-    
-    // 5. Already sent signal - job done
-    if (priceData.signalSent) {
-      removed.push(`${addr.substring(0, 8)}... (signal sent)`);
-      return false;
-    }
-    
-    return true; // Keep by default
-  });
-  
-  if (removed.length > 0) {
-    console.log(`🧹 Cleanup: removed ${removed.length}/${initialCount} tokens (${state.watchlist.length} remaining)`);
-    removed.slice(0, 5).forEach(r => console.log(`  - ${r}`));
-    if (removed.length > 5) {
-      console.log(`  ... and ${removed.length - 5} more`);
-    }
-    
-    // 🔧 v46.7: CRITICAL - Delete removed tokens from state.prices
-    // Prevents Birdeye/Gecko from re-adding old tokens with stale data
-    removedAddresses.forEach(ca => {
-      delete state.prices[ca];
-    });
-    console.log(`🧹 [v46.7] Deleted ${removedAddresses.length} tokens from state.prices (prevent re-add)`);
-    
-    // 🔧 v46 STAGE 3: Clean priceCache for removed tokens
-    let priceCacheCleaned = 0;
-    for (const ca of priceCache.keys()) {
-      if (!state.watchlist.includes(ca)) {
-        priceCache.delete(ca);
-        priceCacheCleaned++;
-      }
-    }
-    
-    if (priceCacheCleaned > 0) {
-      console.log(`🧹 [v46] Cleaned ${priceCacheCleaned} entries from priceCache`);
-    }
-    
-    saveState(state);
-  }
 }
 
 // ==================== IN-MEMORY SIGNAL QUEUE ====================
@@ -1829,33 +1074,6 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ success: false, error: err.message }));
       }
     });
-    return;
-  }
-  
-  // GET /armed - Show armed tokens (live priceCache data)
-  if (req.method === 'GET' && req.url === '/armed') {
-    const armed = getArmedAddresses();
-    const armedData = armed.map(ca => {
-      const entry = priceCache.get(ca) || state.prices[ca] || {};
-      return {
-        ca: ca,
-        name: entry.name || 'Unknown',
-        symbol: entry.symbol || 'Unknown',
-        maxPrice: entry.maxPrice || 0,
-        currentPrice: entry.price || entry.currentPrice || 0,
-        discoveredAt: entry.discoveredAt || 0,
-        tier: entry.maxPrice >= PRICE_HIGH ? 1 : 2
-      };
-    });
-    
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      success: true,
-      count: armed.length,
-      armed: armedData,
-      priceCacheSize: priceCache.size,
-      timestamp: new Date().toISOString()
-    }));
     return;
   }
   
@@ -1972,56 +1190,12 @@ async function analyzeHeliusBundleBuys(tokenMint, launchTimestamp) {
   }
 }
 
-// ==================== WEBSOCKET MAJOR COIN FILTER ====================
-// Queue for checking prices before adding to watchlist
-const pendingWebSocketTokens = new Map(); // mint -> {name, symbol, source, data}
-
-/**
- * Check if token should be added to watchlist (filter major coins)
- * Returns: true (add), false (skip - major coin)
- */
-async function shouldAddToWatchlist(mint, tokenInfo = {}) {
-  try {
-    // Quick Jupiter price check
-    const prices = await fetchDexScreenerBatch([mint]); // v43
-    const price = prices[mint];
-    
-    // Validate price is a number
-    if (!price || typeof price !== 'number' || isNaN(price) || price === 0) {
-      // No valid price data, add anyway (likely new/unlisted token)
-      console.log(`✅ No price data for ${tokenInfo.symbol || mint.substring(0, 8)}, adding (new token)`);
-      return true;
-    }
-    
-    // Filter major coins (price > $1)
-    if (price > MAX_MEMECOIN_PRICE) {
-      console.log(`⛔ FILTERED: ${tokenInfo.symbol || mint.substring(0, 8)} price $${price.toFixed(4)} > $${MAX_MEMECOIN_PRICE} (major coin)`);
-      return false;
-    }
-    
-    console.log(`✅ PASSED: ${tokenInfo.symbol || mint.substring(0, 8)} price $${price.toFixed(6)} ≤ $${MAX_MEMECOIN_PRICE} (memecoin)`);
-    return true;
-    
-  } catch (error) {
-    // On error, add anyway (don't block discovery)
-    console.log(`⚠️ Price check error for ${mint.substring(0, 8)}, adding anyway:`, error.message);
-    return true;
-  }
-}
-
 // ==================== MULTI-HELIUS ENHANCED WEBSOCKET (3x REDUNDANCY + 5 DEX) ====================
 function setupMultiHeliusEnhancedWebSocket() {
   const HELIUS_KEYS = [
     process.env.HELIUS_API_KEY,      // Key 1 (primary)
-    process.env.HELIUS_API_KEY_2,    // Key 2
-    process.env.HELIUS_API_KEY_3,    // Key 3
-    process.env.HELIUS_API_KEY_4,    // Key 4 (Babeh08)
-    process.env.HELIUS_API_KEY_5,    // Key 5 (Babeh083)
-    process.env.HELIUS_API_KEY_6,    // Key 6 (Babeh084)
-    process.env.HELIUS_API_KEY_7,    // Key 7 (Babeh085)
-    process.env.HELIUS_API_KEY_8,    // Key 8 (Babeh086)
-    process.env.HELIUS_API_KEY_9,    // Key 9 (Babeh088)
-    process.env.HELIUS_API_KEY_10    // Key 10 (Babeh089)
+    process.env.HELIUS_API_KEY_2,    // Key 2 (backup)
+    process.env.HELIUS_API_KEY_3     // Key 3 (backup)
   ].filter(key => key); // Remove undefined keys
   
   if (HELIUS_KEYS.length === 0) {
@@ -2051,24 +1225,8 @@ function setupMultiHeliusEnhancedWebSocket() {
     function connect() {
       ws = new WebSocket(wsUrl);
       
-      let pingInterval;
-      let pongTimeout;
-      
       ws.on('open', () => {
         console.log(`✅ Helius WebSocket #${keyIndex + 1} connected`);
-        
-        // 🔧 v46 STAGE 5: Start ping-pong heartbeat (detect zombie connections)
-        pingInterval = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.ping();
-            
-            // If no pong after 60s → zombie connection, force close
-            pongTimeout = setTimeout(() => {
-              console.log(`⚠️ Helius WS #${keyIndex + 1}: No pong received, zombie detected!`);
-              ws.terminate();
-            }, 60000);
-          }
-        }, 30000); // Ping every 30s
         
         // Subscribe to ALL DEX programs
         DEX_PROGRAMS.forEach((dex, dexIndex) => {
@@ -2125,13 +1283,6 @@ function setupMultiHeliusEnhancedWebSocket() {
             console.log(`🔑 Connection: #${keyIndex + 1}`);
             console.log(`${'='.repeat(60)}\n`);
             
-            // Check if memecoin (filter major coins)
-            const shouldAdd = await shouldAddToWatchlist(mint, { symbol: 'Unknown' });
-            if (!shouldAdd) {
-              console.log(`⏭️ Skipped major coin: ${mint.substring(0, 8)}...\n`);
-              continue;
-            }
-            
             // Add to watchlist immediately
             state.watchlist.push(mint);
             state.prices[mint] = {
@@ -2155,33 +1306,8 @@ function setupMultiHeliusEnhancedWebSocket() {
         console.log(`❌ Helius WebSocket #${keyIndex + 1} error: ${err.message}`);
       });
       
-      // 🔧 v46 STAGE 5: Handle pong response (reset timeout)
-      ws.on('pong', () => {
-        if (pongTimeout) {
-          clearTimeout(pongTimeout);
-          pongTimeout = null;
-        }
-      });
-      
       ws.on('close', () => {
         console.log(`🔌 Helius WebSocket #${keyIndex + 1} closed, reconnecting in 5s...`);
-        
-        // 🔧 v46 STAGE 5: Clear ping-pong timers on close
-        if (pingInterval) {
-          clearInterval(pingInterval);
-          pingInterval = null;
-        }
-        if (pongTimeout) {
-          clearTimeout(pongTimeout);
-          pongTimeout = null;
-        }
-        
-        // 🔧 v46 STAGE 4: Clear old timeout to prevent memory leak
-        if (reconnectTimeout) {
-          clearTimeout(reconnectTimeout);
-          reconnectTimeout = null;
-        }
-        
         reconnectTimeout = setTimeout(connect, 5000);
       });
     }
@@ -2286,13 +1412,6 @@ function setupHeliusEnhancedWebSocket() {
           console.log(`📊 Source: Raydium swap activity`);
           console.log(`${'='.repeat(60)}\n`);
           
-          // Check if memecoin (filter major coins)
-          const shouldAdd = await shouldAddToWatchlist(mint, { symbol: 'Unknown' });
-          if (!shouldAdd) {
-            console.log(`⏭️ Skipped major coin: ${mint.substring(0, 8)}...\n`);
-            continue;
-          }
-          
           // Add to watchlist immediately
           state.watchlist.push(mint);
           state.prices[mint] = {
@@ -2318,13 +1437,6 @@ function setupHeliusEnhancedWebSocket() {
     
     ws.on('close', () => {
       console.log('🔌 Helius WebSocket closed, reconnecting in 5 seconds...');
-      
-      // 🔧 v46 STAGE 4: Clear old timeout to prevent memory leak
-      if (reconnectTimeout) {
-        clearTimeout(reconnectTimeout);
-        reconnectTimeout = null;
-      }
-      
       reconnectTimeout = setTimeout(connect, 5000);
     });
   }
@@ -2370,7 +1482,7 @@ function setupPumpPortalWebSocket() {
     console.log('📡 Subscribed to real-time token launches (PumpPortal)');
   });
   
-  ws.on('message', async (data) => {
+  ws.on('message', (data) => {
     try {
       const msg = JSON.parse(data);
       
@@ -2401,14 +1513,7 @@ function setupPumpPortalWebSocket() {
           // v38: Subscribe to real-time swaps for criteria detection
           subscribeToTokenSwaps(mint, name, symbol);
         } else {
-          // Token not in watchlist yet, check if memecoin before adding
-          const shouldAdd = await shouldAddToWatchlist(mint, { name, symbol });
-          if (!shouldAdd) {
-            console.log(`⏭️ Skipped major graduated coin: ${symbol}\n`);
-            return;
-          }
-          
-          // Add with graduated status
+          // Token not in watchlist yet, add it with graduated status
           state.watchlist.push(mint);
           state.prices[mint] = {
             maxPrice: 0,
@@ -2447,13 +1552,6 @@ function setupPumpPortalWebSocket() {
       console.log(`📊 Market Cap: ${msg.marketCapSol?.toFixed(2) || 'N/A'} SOL`);
       console.log(`${'='.repeat(60)}\n`);
       
-      // Check if memecoin (filter major coins)
-      const shouldAdd = await shouldAddToWatchlist(mint, { name, symbol });
-      if (!shouldAdd) {
-        console.log(`⏭️ Skipped major coin: ${symbol}\n`);
-        return;
-      }
-      
       // Add to watchlist immediately (fast-track)
       state.watchlist.push(mint);
       state.prices[mint] = {
@@ -2479,18 +1577,9 @@ function setupPumpPortalWebSocket() {
     console.error('❌ PumpPortal WebSocket error:', error.message);
   });
   
-  let pumpReconnectTimeout;
-  
   ws.on('close', () => {
     console.log('🔌 PumpPortal WebSocket closed, reconnecting in 5 seconds...');
-    
-    // 🔧 v46 STAGE 4: Clear old timeout to prevent memory leak
-    if (pumpReconnectTimeout) {
-      clearTimeout(pumpReconnectTimeout);
-      pumpReconnectTimeout = null;
-    }
-    
-    pumpReconnectTimeout = setTimeout(setupPumpPortalWebSocket, 5000);
+    setTimeout(setupPumpPortalWebSocket, 5000);
   });
   
   return ws;
@@ -2599,8 +1688,6 @@ function subscribeToTokenSwaps(mint, tokenName, tokenSymbol) {
     console.error(`❌ [v38] WebSocket error for ${tokenSymbol}:`, error.message);
   });
   
-  let tokenReconnectTimeout;
-  
   ws.on('close', () => {
     console.log(`🔌 [v38] WebSocket closed for ${tokenSymbol}`);
     delete tokenWebSockets[mint];
@@ -2611,14 +1698,7 @@ function subscribeToTokenSwaps(mint, tokenName, tokenSymbol) {
       const tokenAge = Date.now() - (tokenData.graduatedAt || tokenData.discoveredAt || 0);
       if (tokenAge < 86400000) {
         console.log(`🔄 [v38] Reconnecting to ${tokenSymbol} in 5 seconds...`);
-        
-        // 🔧 v46 STAGE 4: Clear old timeout to prevent memory leak
-        if (tokenReconnectTimeout) {
-          clearTimeout(tokenReconnectTimeout);
-          tokenReconnectTimeout = null;
-        }
-        
-        tokenReconnectTimeout = setTimeout(() => subscribeToTokenSwaps(mint, tokenName, tokenSymbol), 5000);
+        setTimeout(() => subscribeToTokenSwaps(mint, tokenName, tokenSymbol), 5000);
       }
     }
   });
@@ -2744,20 +1824,6 @@ function checkCriteria1And2RealTime(mint, currentPrice, tokenSymbol) {
   console.log('  - Polling (Birdeye): 45 min (top volume)');
   console.log(`  - Polling (Gecko): ${(GECKO_DISCOVER_INTERVAL_MS / 1000).toFixed(0)} sec (trending backup)\n`);
   
-  // Start Telegram FIRST (before async operations)
-  console.log('🔧 DEBUG: Starting Telegram listener EARLY...');
-  try {
-    delete require.cache[require.resolve('./telegram-commands.js')];
-    const { startCommandListener } = require('./telegram-commands.js');
-    console.log('🔧 DEBUG: Module loaded');
-    startCommandListener(BOT_TOKEN, state).catch(err => {
-      console.error('❌ Telegram error:', err.message);
-    });
-    console.log('🔧 DEBUG: Telegram started');
-  } catch (err) {
-    console.error('❌ FATAL Telegram:', err.message);
-  }
-  
   await refreshBirdeyeWatchlist();
   await refreshGeckoWatchlist();
   await checkPricesOnce();
@@ -2766,5 +1832,10 @@ function checkCriteria1And2RealTime(mint, currentPrice, tokenSymbol) {
   setInterval(checkPricesOnce, CHECK_INTERVAL_MS);
   setInterval(fastCheckArmedTokens, FAST_CHECK_INTERVAL_MS);
   setInterval(highRiskCheckArmedTokens, HIGH_RISK_FAST_CHECK_INTERVAL_MS);
-  setInterval(cleanupWatchlist, 10 * 60 * 1000); // Cleanup every 10 minutes
+  
+  // Start Telegram command listener (Phase 1: Read-only)
+  const { startCommandListener } = require('./telegram-commands.js');
+  startCommandListener(BOT_TOKEN, state).catch(err => {
+    console.error('❌ Command listener crashed:', err);
+  });
 })();
