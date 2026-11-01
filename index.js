@@ -1644,17 +1644,17 @@ async function cleanupWatchlist() {
     // 1. Fresh (<60 min) - give more chance to pump
     if (ageMinutes < 60) return true;
     
-    // 2. Has pumped (maxPrice >0) AND not too old (<240 min = 4h) - wait for dump signal
-    if (priceData.maxPrice > 0 && ageMinutes < 240) return true;
-    
-    // REMOVE if:
-    // 3. Old (>120 min = 2h) AND never pumped (maxPrice = 0) - dead token
-    if (ageMinutes > 120 && priceData.maxPrice === 0) {
+    // 🔧 v46.6: FIX GAP - Remove dead tokens (never pumped) at 60 min, don't wait 120 min!
+    if (ageMinutes >= 60 && priceData.maxPrice === 0) {
       removed.push(`${addr.substring(0, 8)}... (${ageMinutes.toFixed(0)}min, never pumped)`);
       return false;
     }
     
-    // 4. Very old (>240 min = 4h) - max age limit
+    // 2. Has pumped (maxPrice >0) AND not too old (<240 min = 4h) - wait for dump signal
+    if (priceData.maxPrice > 0 && ageMinutes < 240) return true;
+    
+    // REMOVE if:
+    // 3. Very old (>240 min = 4h) - max age limit
     if (ageMinutes > 240) {
       removed.push(`${addr.substring(0, 8)}... (${ageMinutes.toFixed(0)}min, too old)`);
       return false;
