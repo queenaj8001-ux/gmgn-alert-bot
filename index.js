@@ -1751,6 +1751,32 @@ const server = http.createServer((req, res) => {
     return;
   }
   
+  // GET /armed - Show armed tokens (live priceCache data)
+  if (req.method === 'GET' && req.url === '/armed') {
+    const armed = getArmedAddresses();
+    const armedData = armed.map(ca => {
+      const entry = priceCache[ca] || state.prices[ca] || {};
+      return {
+        ca: ca,
+        name: entry.name || 'Unknown',
+        symbol: entry.symbol || 'Unknown',
+        maxPrice: entry.maxPrice || 0,
+        currentPrice: entry.price || entry.currentPrice || 0,
+        discoveredAt: entry.discoveredAt || 0,
+        tier: entry.maxPrice >= PRICE_HIGH ? 1 : 2
+      };
+    });
+    
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      success: true,
+      count: armed.length,
+      armed: armedData,
+      timestamp: new Date().toISOString()
+    }));
+    return;
+  }
+  
   // GET /health - Health check
   if (req.method === 'GET' && (req.url === '/health' || req.url === '/')) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
