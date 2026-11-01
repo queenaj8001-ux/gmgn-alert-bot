@@ -888,9 +888,11 @@ function cleanupOldTokens() {
     
     const age = now - entry.discoveredAt;
     
-    // Check if token is armed (using same logic as getArmedAddresses)
-    const isArmed = entry.maxPrice >= PRICE_HIGH || 
-                    (PRICE_HIGH_2 && entry.maxPrice >= PRICE_HIGH_2);
+    // Check if token is armed (MUST match getArmedAddresses() logic exactly!)
+    const pernahCapaiTier1 = (entry.allTimeMaxPrice || 0) >= PRICE_HIGH;
+    const armedTier1 = entry.maxPrice >= PRICE_HIGH;
+    const armedTier2 = PRICE_HIGH_2 != null && entry.maxPrice >= PRICE_HIGH_2 && !pernahCapaiTier1;
+    const isArmed = armedTier1 || armedTier2;
     
     // Armed tokens: max 4h, Non-armed: max 2h
     const maxAge = isArmed ? MAX_AGE_ARMED : MAX_AGE_NON_ARMED;
@@ -1872,9 +1874,9 @@ function checkCriteria1And2RealTime(mint, currentPrice, tokenSymbol) {
   setInterval(fastCheckArmedTokens, FAST_CHECK_INTERVAL_MS);
   setInterval(highRiskCheckArmedTokens, HIGH_RISK_FAST_CHECK_INTERVAL_MS);
   
-  // V47.1: Cleanup old tokens every 30 minutes
-  setInterval(cleanupOldTokens, 30 * 60 * 1000); // 30 minutes
-  console.log('🧹 Automatic cleanup enabled: Non-armed tokens max 2h, Armed tokens max 4h, Cycle: 30min');
+  // V47.1: Cleanup old tokens every 10 minutes
+  setInterval(cleanupOldTokens, 10 * 60 * 1000); // 10 minutes
+  console.log('🧹 Automatic cleanup enabled: Non-armed tokens max 2h, Armed tokens max 4h, Cycle: 10min');
   
   // Start Telegram command listener (Phase 1: Read-only)
   const { startCommandListener } = require('./telegram-commands.js');
