@@ -1314,13 +1314,13 @@ async function processOneTokenInner(addr) {
   // 🔧 v46.8: FIX #7 - Set discoveredAt to REAL pairCreatedAt (not Date.now placeholder)
   // Problem: Birdeye tokens get discoveredAt=NOW, bot thinks old tokens are fresh
   // Solution: Update discoveredAt to pairCreatedAt when we fetch DexScreener data
-  if (snapshot.pairCreatedAt && entry.discoveredAt) {
+  if (snapshot.pair && snapshot.pair.pairCreatedAt && entry.discoveredAt) {
     const age = (Date.now() - entry.discoveredAt) / 60000; // minutes since placeholder set
-    const isPlaceholder = age < 10; // placeholder set <10 min ago (fresh from Birdeye/Gecko)
+    const isPlaceholder = age < 120; // placeholder set <120 min ago (allow all tokens <2h to update)
     
     if (isPlaceholder) {
-      entry.discoveredAt = snapshot.pairCreatedAt; // Update to REAL age!
-      console.log(`🔧 Updated discoveredAt for ${addr.substring(0,8)}: placeholder → real pairCreatedAt`);
+      entry.discoveredAt = snapshot.pair.pairCreatedAt; // Update to REAL age!
+      console.log(`🔧 Updated discoveredAt for ${addr.substring(0,8)}: placeholder → real pairCreatedAt (age now ${((Date.now() - snapshot.pair.pairCreatedAt) / 60000).toFixed(0)} min)`);
     }
   }
   
