@@ -1862,13 +1862,14 @@ function checkCriteria1And2RealTime(mint, currentPrice, tokenSymbol) {
   console.log('🔥 HYBRID DISCOVERY SYSTEM ACTIVE:');
   console.log('  - WebSocket (Multi-Helius): 0-5 sec (3 connections × 5 DEXs)');
   console.log('  - WebSocket (PumpPortal): 0-10 sec (new token creation)');
-  console.log('  - Polling (Birdeye): 45 min (top volume)');
+  // console.log('  - Polling (Birdeye): 45 min (top volume)'); // V47.3: Disabled (0% contribution)
   console.log(`  - Polling (Gecko): ${(GECKO_DISCOVER_INTERVAL_MS / 1000).toFixed(0)} sec (trending backup)\n`);
   
-  await refreshBirdeyeWatchlist();
+  // V47.3: Birdeye disabled - 0% contribution, rate limited, discovers major coins only
+  // await refreshBirdeyeWatchlist();
   await refreshGeckoWatchlist();
   await checkPricesOnce();
-  setInterval(refreshBirdeyeWatchlist, BIRDEYE_DISCOVER_INTERVAL_MS);
+  // setInterval(refreshBirdeyeWatchlist, BIRDEYE_DISCOVER_INTERVAL_MS);
   setInterval(refreshGeckoWatchlist, GECKO_DISCOVER_INTERVAL_MS);
   setInterval(checkPricesOnce, CHECK_INTERVAL_MS);
   setInterval(fastCheckArmedTokens, FAST_CHECK_INTERVAL_MS);
