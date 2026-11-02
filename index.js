@@ -1927,7 +1927,7 @@ function checkCriteria1And2RealTime(mint, currentPrice, tokenSymbol) {
   
   // V47.1: Cleanup old tokens every 10 minutes
   setInterval(cleanupOldTokens, 10 * 60 * 1000); // 10 minutes
-  console.log('🧹 Automatic cleanup enabled: Non-armed tokens max 2h, Armed tokens max 4h, Cycle: 10min');
+  console.log('🧹 Automatic cleanup enabled: Non-armed tokens max 60min, Armed tokens max 2h, Cycle: 10min');
   
   // Start Telegram command listener (Phase 1: Read-only)
   const { startCommandListener } = require('./telegram-commands.js');
