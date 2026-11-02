@@ -905,6 +905,25 @@ function isDeadToken(entry, ageMin) {
     return { dead: true, reason: `old + no pump (${ageMin.toFixed(0)}min)` };
   }
   
+  // V47.5.1: Additional aggressive filters
+  // Criteria 5: No price data after 30min (DexScreener failed/delisted)
+  if (ageMin > 30 && !entry.currentPrice && (!entry.maxPrice || entry.maxPrice === 0)) {
+    return { dead: true, reason: `no data (${ageMin.toFixed(0)}min)` };
+  }
+  
+  // Criteria 6: Micro price <$0.000001 after 30min (too low to profit)
+  if (ageMin > 30) {
+    const price = entry.currentPrice || entry.maxPrice || 0;
+    if (price > 0 && price < 0.000001) {
+      return { dead: true, reason: `micro price (${ageMin.toFixed(0)}min)` };
+    }
+  }
+  
+  // Criteria 7: Never pumped after 45min (dead on arrival)
+  if (ageMin > 45 && entry.maxPrice > 0 && entry.maxPrice < 0.00001) {
+    return { dead: true, reason: `no pump (${ageMin.toFixed(0)}min)` };
+  }
+  
   return { dead: false };
 }
 
