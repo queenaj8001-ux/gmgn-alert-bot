@@ -538,14 +538,30 @@ async function fetchGeckoPage(page) {
   const url = `https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=${page}`;
   const res = await fetch(url, { headers: { accept: 'application/json' } });
   if (res.status === 429) return { retry: true };
-  if (!res.ok) return { retry: false, addrs: null, status: res.status };
+  if (!res.ok) return { retry: false, tokens: null, status: res.status };
   const json = await res.json();
-  const addrs = (json?.data || []).map((p) => p.attributes?.address).filter(Boolean);
-  return { retry: false, addrs };
+  
+  // V47.4: Parse token address directly from API response, filter by volume & age
+  const tokens = (json?.data || [])
+    .filter(p => {
+      const vol1h = parseFloat(p.attributes?.volume_usd?.h1 || 0);
+      const createdAt = p.attributes?.pool_created_at;
+      if (!createdAt) return false;
+      const ageHours = (Date.now() - new Date(createdAt).getTime()) / 3600000;
+      // Filter: $50K+ volume in 1h, created <24h ago
+      return vol1h > 50000 && ageHours < 24;
+    })
+    .map((p) => {
+      const tokenId = p.relationships?.base_token?.data?.id;
+      return tokenId ? tokenId.replace('solana_', '') : null;
+    })
+    .filter(Boolean);
+  
+  return { retry: false, tokens };
 }
 
 async function getGeckoTerminalTrendingPools() {
-  const allAddresses = [];
+  const allTokens = [];
   for (let page = 1; page <= GECKO_PAGES; page++) {
     let result = await fetchGeckoPage(page);
     if (result.retry) {
@@ -555,28 +571,19 @@ async function getGeckoTerminalTrendingPools() {
       await sleep(8000);
       result = await fetchGeckoPage(page);
     }
-    if (result.retry || result.addrs == null) {
+    if (result.retry || result.tokens == null) {
       console.error(`GeckoTerminal halaman ${page} gagal (${result.status || 429}), lanjut dengan yang sudah ada.`);
       break;
     }
-    if (result.addrs.length === 0) break;
-    allAddresses.push(...result.addrs);
+    if (result.tokens.length === 0) break;
+    allTokens.push(...result.tokens);
     await sleep(2500);
   }
-  return allAddresses;
+  return allTokens;
 }
-async function resolvePoolToTokenAddress(pairAddress) {
-  try {
-    const url = `https://api.dexscreener.com/latest/dex/pairs/solana/${pairAddress}`;
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const json = await res.json();
-    const p = json?.pair || (json?.pairs && json.pairs[0]);
-    return p?.baseToken?.address || null;
-  } catch {
-    return null;
-  }
-}
+
+// V47.4: resolvePoolToTokenAddress() REMOVED - no longer needed!
+// Token addresses now parsed directly from Gecko API response
 
 // ==================== GABUNGKAN WATCHLIST DARI TIGA SUMBER ====================
 function rebuildWatchlist() {
@@ -622,13 +629,8 @@ async function refreshBirdeyeWatchlist() {
 async function refreshGeckoWatchlist() {
   console.log(`\n[${new Date().toISOString()}] Refresh watchlist dari GeckoTerminal (volume 1 jam)...`);
   try {
-    const poolAddrs = await getGeckoTerminalTrendingPools();
-    const geckoAddresses = [];
-    for (const poolAddr of poolAddrs) {
-      const tokenAddr = await resolvePoolToTokenAddress(poolAddr);
-      if (tokenAddr) geckoAddresses.push(tokenAddr);
-      await sleep(150);
-    }
+    // V47.4: Direct token addresses, no pool resolution needed
+    const geckoAddresses = await getGeckoTerminalTrendingPools();
     state.geckoAddresses = geckoAddresses;
     console.log(`GeckoTerminal: ${geckoAddresses.length} koin.`);
   } catch (err) {
