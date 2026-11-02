@@ -876,19 +876,62 @@ function getHighRiskArmedAddresses(armedAddresses) {
   });
 }
 
-// ==================== V47.1: AUTOMATIC CLEANUP ====================
+// ==================== V47.5: AGGRESSIVE CLEANUP + DEAD TOKEN DETECTION ====================
+
+// V47.5: Detect dead/rugged tokens for immediate removal
+function isDeadToken(entry, ageMin) {
+  if (!entry) return false;
+  
+  // Criteria 1: Price crash >95% from maxPrice (rug/dump)
+  if (entry.maxPrice > 0.00001 && entry.currentPrice) {
+    const dropPercent = ((entry.maxPrice - entry.currentPrice) / entry.maxPrice) * 100;
+    if (dropPercent > 95) {
+      return { dead: true, reason: `price crash ${dropPercent.toFixed(1)}%` };
+    }
+  }
+  
+  // Criteria 2: No trading activity (volume dead)
+  if (entry.volume1h !== undefined && entry.volume1h < 100) {
+    return { dead: true, reason: `no volume ($${entry.volume1h.toFixed(0)})` };
+  }
+  
+  // Criteria 3: Liquidity pulled (LP rug)
+  if (entry.liquidityUsd !== undefined && entry.liquidityUsd < 500) {
+    return { dead: true, reason: `low liquidity ($${entry.liquidityUsd.toFixed(0)})` };
+  }
+  
+  // Criteria 4: Old + never pumped (dead on arrival)
+  if (ageMin > 60 && entry.maxPrice < 0.00001) {
+    return { dead: true, reason: `old + no pump (${ageMin.toFixed(0)}min)` };
+  }
+  
+  return { dead: false };
+}
+
 function cleanupOldTokens() {
   const now = Date.now();
-  const MAX_AGE_NON_ARMED = 2 * 60 * 60 * 1000; // 2 hours for non-armed tokens
-  const MAX_AGE_ARMED = 4 * 60 * 60 * 1000;     // 4 hours for armed tokens (consistent with getArmedAddresses)
+  // V47.5: Aggressive cleanup - reduce from 2h/4h to 60min/2h
+  const MAX_AGE_NON_ARMED = 60 * 60 * 1000; // 60 minutes for non-armed tokens (was 2h)
+  const MAX_AGE_ARMED = 2 * 60 * 60 * 1000;  // 2 hours for armed tokens (was 4h)
   
   const before = state.watchlist.length;
+  let deadCount = 0;
+  let ageCount = 0;
   
   state.watchlist = state.watchlist.filter(addr => {
     const entry = state.prices[addr];
     if (!entry?.discoveredAt) return true; // Keep if no timestamp (shouldn't happen, but safe)
     
     const age = now - entry.discoveredAt;
+    const ageMin = age / 60000;
+    
+    // V47.5: Check if token is dead (rug/no activity/LP pulled)
+    const deadCheck = isDeadToken(entry, ageMin);
+    if (deadCheck.dead) {
+      console.log(`💀 Dead token removed: ${addr.slice(0, 8)}... (${deadCheck.reason})`);
+      deadCount++;
+      return false; // Remove immediately
+    }
     
     // Check if token is armed (MUST match getArmedAddresses() logic exactly!)
     const pernahCapaiTier1 = (entry.allTimeMaxPrice || 0) >= PRICE_HIGH;
@@ -896,10 +939,15 @@ function cleanupOldTokens() {
     const armedTier2 = PRICE_HIGH_2 != null && entry.maxPrice >= PRICE_HIGH_2 && !pernahCapaiTier1;
     const isArmed = armedTier1 || armedTier2;
     
-    // Armed tokens: max 4h, Non-armed: max 2h
+    // Armed tokens: max 2h, Non-armed: max 60min (V47.5: reduced from 4h/2h)
     const maxAge = isArmed ? MAX_AGE_ARMED : MAX_AGE_NON_ARMED;
     
-    return age <= maxAge;
+    if (age > maxAge) {
+      ageCount++;
+      return false; // Remove by age
+    }
+    
+    return true; // Keep
   });
   
   // Clean up orphaned prices entries
@@ -912,7 +960,7 @@ function cleanupOldTokens() {
   
   const removed = before - state.watchlist.length;
   if (removed > 0) {
-    console.log(`🧹 Cleanup: ${removed} tokens removed (${before} → ${state.watchlist.length})`);
+    console.log(`🧹 Cleanup: ${removed} tokens removed (${before} → ${state.watchlist.length}) [dead: ${deadCount}, age: ${ageCount}]`);
     saveState(state);
   }
 }
