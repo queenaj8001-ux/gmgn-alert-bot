@@ -642,8 +642,34 @@ async function refreshGeckoWatchlist() {
 // REMOVED: refreshDexScreenerWatchlist() - Redundant discovery layer
 // Using: Multi-Helius + PumpPortal + Gecko only
 
+// ==================== V47.6: PUMPAPI PRICE CACHE ====================
+// Real-time price cache updated by PumpAPI WebSocket stream
+const pumpApiPriceCache = new Map(); // mint → { price, timestamp, liquidity, volume, ... }
+const PRICE_CACHE_TTL_MS = 5 * 60 * 1000; // 5min stale = fallback to DexScreener
+let pumpApiLastEventTime = 0;
+let pumpApiEventCount = 0;
+
 // ==================== TAHAP 1: snapshot harga (gate STABIL saja) ====================
 async function getTokenSnapshot(address) {
+  // V47.6: Try PumpAPI cache first (real-time from WebSocket)
+  const cached = pumpApiPriceCache.get(address);
+  if (cached && (Date.now() - cached.timestamp) < PRICE_CACHE_TTL_MS) {
+    // Fresh data from PumpAPI stream, use it!
+    const ageMinutes = (Date.now() - cached.pairCreatedAt) / 60000;
+    if (ageMinutes < MIN_TOKEN_AGE_MINUTES || ageMinutes > MAX_TOKEN_AGE_MINUTES) return null;
+    
+    if (isBrandImpersonation(cached.symbol, cached.name)) return null;
+    
+    return { 
+      address, 
+      symbol: cached.symbol, 
+      name: cached.name, 
+      price: cached.price, 
+      pair: cached.pair // Keep pair object for checkQualityGates
+    };
+  }
+  
+  // V47.6: Fallback to DexScreener (cache miss or stale)
   const url = `https://api.dexscreener.com/latest/dex/tokens/${address}`;
   const res = await fetch(url);
   if (!res.ok) return null;
@@ -1918,8 +1944,127 @@ function checkCriteria1And2RealTime(mint, currentPrice, tokenSymbol) {
   }
 }
 
+// ==================== V47.6: PUMPAPI WEBSOCKET STREAM ====================
+function setupPumpApiWebSocket() {
+  let ws = null;
+  let reconnectAttempts = 0;
+  const MAX_RECONNECT_ATTEMPTS = 999; // Unlimited retry
+  const BASE_RECONNECT_DELAY = 2000; // 2s base
+  const MAX_RECONNECT_DELAY = 60000; // 60s max
+  
+  function connect() {
+    try {
+      ws = new WebSocket('wss://stream.pumpapi.io/');
+      
+      ws.on('open', () => {
+        console.log('✅ PumpAPI.io WebSocket connected');
+        reconnectAttempts = 0;
+        pumpApiEventCount = 0;
+        pumpApiLastEventTime = Date.now();
+      });
+      
+      ws.on('message', (data) => {
+        try {
+          const event = JSON.parse(data.toString());
+          pumpApiEventCount++;
+          pumpApiLastEventTime = Date.now();
+          
+          // Filter: only pump.fun pools (ignore meteora, raydium, etc)
+          if (event.pool !== 'pump') return;
+          
+          // Filter: only buy/sell actions (ignore create, migrate, etc)
+          if (event.action !== 'buy' && event.action !== 'sell') return;
+          
+          const mint = event.mint;
+          if (!mint) return;
+          
+          // Filter: only tokens in watchlist (performance critical!)
+          if (!state.watchlist.includes(mint)) return;
+          
+          // Update price cache with latest data
+          pumpApiPriceCache.set(mint, {
+            price: event.priceUsd || event.price || 0,
+            priceSol: event.priceSol || 0,
+            liquidityUsd: event.quoteInPool || 0,
+            volume24h: event.volume24h || 0,
+            marketCap: event.marketCapUsd || event.marketCapSol || 0,
+            name: event.name || 'Unknown',
+            symbol: event.symbol || 'Unknown',
+            timestamp: Date.now(),
+            pairCreatedAt: event.pairCreatedAt || Date.now(),
+            // Build pair object compatible with checkQualityGates
+            pair: {
+              priceUsd: (event.priceUsd || event.price || 0).toString(),
+              liquidity: { usd: event.quoteInPool || 0 },
+              volume: { 
+                h1: event.volume?.h1 || 0,
+                h24: event.volume24h || 0
+              },
+              marketCap: event.marketCapUsd || event.marketCapSol || 0,
+              fdv: event.marketCapUsd || event.marketCapSol || 0,
+              pairCreatedAt: event.pairCreatedAt || Date.now(),
+              baseToken: {
+                symbol: event.symbol || 'Unknown',
+                name: event.name || 'Unknown'
+              }
+            }
+          });
+          
+          // Log every 100 events
+          if (pumpApiEventCount % 100 === 0) {
+            const cacheSize = pumpApiPriceCache.size;
+            const watchlistSize = state.watchlist.length;
+            const hitRate = ((cacheSize / watchlistSize) * 100).toFixed(1);
+            console.log(`📊 PumpAPI: ${pumpApiEventCount} events processed, ${cacheSize}/${watchlistSize} cached (${hitRate}% coverage)`);
+          }
+        } catch (err) {
+          console.error('❌ PumpAPI event parse error:', err.message);
+        }
+      });
+      
+      ws.on('error', (err) => {
+        console.error('❌ PumpAPI WebSocket error:', err.message);
+      });
+      
+      ws.on('close', () => {
+        console.log('⚠️ PumpAPI WebSocket closed');
+        
+        // Exponential backoff reconnect
+        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+          const delay = Math.min(
+            BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts),
+            MAX_RECONNECT_DELAY
+          );
+          reconnectAttempts++;
+          console.log(`🔄 Reconnecting PumpAPI in ${(delay/1000).toFixed(0)}s (attempt ${reconnectAttempts})...`);
+          setTimeout(connect, delay);
+        } else {
+          console.error('🚨 PumpAPI max reconnect attempts reached!');
+        }
+      });
+      
+    } catch (err) {
+      console.error('❌ PumpAPI connection error:', err.message);
+      setTimeout(connect, BASE_RECONNECT_DELAY);
+    }
+  }
+  
+  // Health monitor: alert if no events for 2 minutes
+  setInterval(() => {
+    const silentMs = Date.now() - pumpApiLastEventTime;
+    if (pumpApiLastEventTime > 0 && silentMs > 120000) {
+      console.log(`⚠️ PumpAPI stream silent for ${(silentMs/1000).toFixed(0)}s - may be disconnected`);
+    }
+  }, 60000); // Check every minute
+  
+  connect();
+}
+
 // ==================== JALANKAN ====================
 (async () => {
+  // V47.6: Start PumpAPI WebSocket for real-time price updates
+  setupPumpApiWebSocket();
+  
   // Start PumpPortal WebSocket for real-time discovery
   setupPumpPortalWebSocket();
   setupMultiHeliusEnhancedWebSocket();
