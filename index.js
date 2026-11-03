@@ -858,6 +858,13 @@ async function processOneTokenInner(addr) {
     const quality = await checkQualityGates(snapshot);
     if (quality.pass) {
       const momentum = computeMomentum(entry.recentPrices);
+      
+      // MOMENTUM FILTER: Skip signal jika momentum <-80% (rugpull indicator)
+      if (momentum.pct != null && momentum.pct < -80) {
+        console.log(`⚠️ Sinyal DIBLOKIR (momentum terlalu negatif): ${snapshot.symbol} (${addr}) — momentum ${momentum.pct.toFixed(1)}% (threshold -80%), possible rugpull`);
+        return; // Skip signal, don't send to Telegram
+      }
+      
       console.log(`🚨 Sinyal (kriteria ${tierLabel}): ${snapshot.symbol} (${addr}) — puncak $${entry.maxPrice} → sekarang $${snapshot.price} — momentum: ${momentum.label}`);
       await sendTelegramAlert({ ...quality.alertData, momentum, tierLabel });
       entry.maxPrice = snapshot.price;
