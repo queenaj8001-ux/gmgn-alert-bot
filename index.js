@@ -83,6 +83,7 @@ const HIGH_RISK_FAST_CHECK_INTERVAL_MS = parseInt(process.env.HIGH_RISK_FAST_CHE
 
 const MOMENTUM_WINDOW = parseInt(process.env.MOMENTUM_WINDOW || '5', 10);
 const MOMENTUM_FLAT_THRESHOLD_PCT = parseFloat(process.env.MOMENTUM_FLAT_THRESHOLD_PCT || '3');
+const MOMENTUM_RUGPULL_THRESHOLD = parseFloat(process.env.MOMENTUM_RUGPULL_THRESHOLD || '-80');
 
 const TOP_N = parseInt(process.env.TOP_N || '50', 10);
 const GECKO_PAGES = parseInt(process.env.GECKO_PAGES || '1', 10);
@@ -859,9 +860,9 @@ async function processOneTokenInner(addr) {
     if (quality.pass) {
       const momentum = computeMomentum(entry.recentPrices);
       
-      // MOMENTUM FILTER: Skip signal jika momentum <-80% (rugpull indicator)
-      if (momentum.pct != null && momentum.pct < -80) {
-        console.log(`⚠️ Sinyal DIBLOKIR (momentum terlalu negatif): ${snapshot.symbol} (${addr}) — momentum ${momentum.pct.toFixed(1)}% (threshold -80%), possible rugpull`);
+      // MOMENTUM FILTER: Skip signal jika momentum < threshold (rugpull indicator)
+      if (momentum.pct != null && momentum.pct < MOMENTUM_RUGPULL_THRESHOLD) {
+        console.log(`⚠️ Sinyal DIBLOKIR (momentum terlalu negatif): ${snapshot.symbol} (${addr}) — momentum ${momentum.pct.toFixed(1)}% (threshold ${MOMENTUM_RUGPULL_THRESHOLD}%), possible rugpull`);
         return; // Skip signal, don't send to Telegram
       }
       

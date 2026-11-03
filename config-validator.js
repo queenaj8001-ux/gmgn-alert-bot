@@ -17,6 +17,7 @@ const FILTER_RULES = {
   market_cap_min: { min: 100, max: 10000000, unit: 'USD' },
   volume_1h_min: { min: 10, max: 100000, unit: 'USD' },
   check_interval: { min: 5, max: 120, unit: 'seconds' },
+  momentum_rugpull: { min: -99, max: -50, unit: 'percent' },  // -99% to -50%
 };
 
 // Price tier names mapping
@@ -35,6 +36,7 @@ const FILTER_NAMES = {
   market_cap_min: 'MIN_MARKET_CAP_USD',
   volume_1h_min: 'MIN_VOLUME_1H_USD',
   check_interval: 'CHECK_INTERVAL_SECONDS',
+  momentum_rugpull: 'MOMENTUM_RUGPULL_THRESHOLD',
 };
 
 /**

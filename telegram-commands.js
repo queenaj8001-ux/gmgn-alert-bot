@@ -195,6 +195,12 @@ function createSetFilterKeyboard() {
           callback_data: 'sf_vol' 
         },
       ],
+      [
+        { 
+          text: `⚠️ Momentum Rugpull (${currentConfig.MOMENTUM_RUGPULL_THRESHOLD || -80}%)`, 
+          callback_data: 'sf_momentum' 
+        },
+      ],
     ],
   };
 }
@@ -483,7 +489,7 @@ async function commandSetFilter(userId, args) {
   const value = parseFloat(args[1]);
 
   // Validate filter name
-  const validFilters = ['age_min', 'age_max', 'liquidity_min', 'mcap_min', 'volume_min'];
+  const validFilters = ['age_min', 'age_max', 'liquidity_min', 'mcap_min', 'volume_min', 'momentum_rugpull'];
   if (!validFilters.includes(filter)) {
     return `❌ Invalid filter: ${args[0]}
 
@@ -889,13 +895,14 @@ async function handleCallbackQuery(botToken, callbackQuery, state) {
       );
       
     } else if (data.startsWith('sf_')) {
-      // Setfilter selection: sf_age_min, sf_age_max, sf_liq, sf_mcap, sf_vol
+      // Setfilter selection: sf_age_min, sf_age_max, sf_liq, sf_mcap, sf_vol, sf_momentum
       const filterMap = {
         sf_age_min: 'age_min',
         sf_age_max: 'age_max',
         sf_liq: 'liquidity_min',
         sf_mcap: 'mcap_min',
         sf_vol: 'volume_min',
+        sf_momentum: 'momentum_rugpull',
       };
       
       const filter = filterMap[data];
@@ -922,6 +929,7 @@ async function handleCallbackQuery(botToken, callbackQuery, state) {
         liquidity_min: { unit: 'USD', example: '2000' },
         mcap_min: { unit: 'USD', example: '10000' },
         volume_min: { unit: 'USD', example: '1000' },
+        momentum_rugpull: { unit: 'percent', example: '-80' },
       };
       const info = filterInfo[filter];
       
