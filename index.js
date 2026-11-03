@@ -1237,10 +1237,12 @@ const server = http.createServer((req, res) => {
   res.end(JSON.stringify({ error: 'Not found' }));
 });
 
-server.listen(PORT, () => {
-  console.log(`🚀 Bot + Middleware integrated server running on port ${PORT}`);
-  console.log(`📡 Endpoints: GET /signals, POST /signal, GET /health`);
-});
+// HTTP SERVER DISABLED (conflicts with multiple instances)
+// server.listen(PORT, () => {
+//   console.log(`🚀 Bot + Middleware integrated server running on port ${PORT}`);
+//   console.log(`📡 Endpoints: GET /signals, POST /signal, GET /health`);
+// });
+console.log('⚠️ HTTP server disabled (port conflict prevention)');
 
 // ==================== HELIUS BUNDLE ANALYSIS ====================
 async function analyzeHeliusBundleBuys(tokenMint, launchTimestamp) {
@@ -2087,6 +2089,13 @@ function setupPumpApiWebSocket() {
   // console.log('  - Polling (Birdeye): 45 min (top volume)'); // V47.3: Disabled (0% contribution)
   console.log(`  - Polling (Gecko): ${(GECKO_DISCOVER_INTERVAL_MS / 1000).toFixed(0)} sec (trending backup)\n`);
   
+  // Start Telegram command listener FIRST (before async operations that might block)
+  console.log('🤖 Starting Telegram command listener...');
+  const { startCommandListener } = require('./telegram-commands.js');
+  startCommandListener(BOT_TOKEN, state).catch(err => {
+    console.error('❌ Command listener crashed:', err);
+  });
+  
   // V47.3: Birdeye disabled - 0% contribution, rate limited, discovers major coins only
   // await refreshBirdeyeWatchlist();
   await refreshGeckoWatchlist();
@@ -2100,10 +2109,4 @@ function setupPumpApiWebSocket() {
   // V47.1: Cleanup old tokens every 10 minutes
   setInterval(cleanupOldTokens, 10 * 60 * 1000); // 10 minutes
   console.log('🧹 Automatic cleanup enabled: Non-armed tokens max 60min, Armed tokens max 2h, Cycle: 10min');
-  
-  // Start Telegram command listener (Phase 1: Read-only)
-  const { startCommandListener } = require('./telegram-commands.js');
-  startCommandListener(BOT_TOKEN, state).catch(err => {
-    console.error('❌ Command listener crashed:', err);
-  });
 })();
