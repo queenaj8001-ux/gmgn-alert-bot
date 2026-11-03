@@ -721,6 +721,7 @@ async function executeSetFilter(data) {
       liquidity_min: 'MIN_LIQUIDITY_FOR_SIGNAL_USD',
       mcap_min: 'MIN_MARKET_CAP_USD',
       volume_min: 'MIN_VOLUME_1H_USD',
+      momentum_rugpull: 'MOMENTUM_RUGPULL_THRESHOLD',
     };
     
     const envKey = filterMap[filter];
@@ -1202,9 +1203,10 @@ async function startCommandListener(botToken, state) {
   console.log('🤖 Telegram command listener started (polling mode)');
   console.log(`✅ Authorized user ID: ${AUTHORIZED_USER_ID}`);
   
-  // Register commands for autocomplete (non-blocking)
+  // Register commands for autocomplete (non-blocking, skip on timeout)
   setMyCommands(botToken).catch(err => {
-    console.error('⚠️ Failed to register commands, but listener continues:', err.message);
+    console.error('⚠️ Failed to register commands (continuing anyway):', err.message);
+    console.log('💡 Commands still work, just no autocomplete dropdown');
   });
   
   let pollCount = 0;
