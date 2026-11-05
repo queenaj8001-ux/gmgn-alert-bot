@@ -693,8 +693,59 @@ async function getTokenSnapshot(address) {
   } catch (err) {
     // Jupiter API failed, token has no price data
   }
+  
+  return null; // No price data from any source
+}
 
-  return null; // No price data available from any source
+// V49.5: Jupiter Batch Price Fetcher (for graduated armed tokens)
+// Fetches up to 50 token prices in a single API call (5X faster than sequential)
+async function getJupiterBatchPrices(addresses) {
+  if (!addresses || addresses.length === 0) return {};
+  
+  // Jupiter API supports up to 50 tokens per request
+  const BATCH_SIZE = 50;
+  const chunks = [];
+  for (let i = 0; i < addresses.length; i += BATCH_SIZE) {
+    chunks.push(addresses.slice(i, i + BATCH_SIZE));
+  }
+  
+  const results = {};
+  
+  for (const chunk of chunks) {
+    const ids = chunk.join(',');
+    const jupUrl = `https://api.jup.ag/price/v3?ids=${ids}`;
+    
+    try {
+      const jupRes = await fetch(jupUrl);
+      if (jupRes.ok) {
+        const jupJson = await jupRes.json();
+        
+        // Parse response: { "mint": { "usdPrice": 0.123, ... }, ... }
+        for (const [mint, data] of Object.entries(jupJson)) {
+          if (data?.usdPrice && data.usdPrice > 0) {
+            results[mint] = {
+              address: mint,
+              symbol: '?',
+              name: '?',
+              price: data.usdPrice,
+              pair: null // No pair data (graduated token)
+            };
+          }
+        }
+      } else {
+        console.error(`⚠️ Jupiter batch API HTTP ${jupRes.status} for ${chunk.length} tokens`);
+      }
+    } catch (err) {
+      console.error(`⚠️ Jupiter batch API error for ${chunk.length} tokens:`, err.message);
+    }
+    
+    // Rate limit safety: small delay between chunks (if multiple chunks)
+    if (chunks.length > 1) {
+      await sleep(500);
+    }
+  }
+  
+  return results;
 }
 
 // ==================== TAHAP 2: filter kualitas (gate FLUKTUATIF — dicek cuma saat sinyal) ====================
@@ -1089,18 +1140,56 @@ async function fastCheckArmedTokens() {
   isFastChecking = true;
   const startTime = Date.now();
   try {
-    console.log(`🔄 Fast check: Processing ${armed.length} armed tokens sequentially...`);
-    // V47: RATE LIMITING - Sequential processing with 250ms delay between requests
-    // Prevents DexScreener ban (300 req/min limit)
-    for (let i = 0; i < armed.length; i++) {
-      await processOneToken(armed[i]);
-      if (i < armed.length - 1) {
-        await sleep(250); // 250ms delay = max 240 req/min (under 300 limit)
+    console.log(`🔄 Fast check: Processing ${armed.length} armed tokens...`);
+    
+    // V49.5: Separate PumpAPI (cached) vs Jupiter (needs fetch) tokens
+    const pumpApiTokens = [];
+    const jupiterTokens = [];
+    
+    for (const addr of armed) {
+      const cached = pumpApiPriceCache.get(addr);
+      if (cached && (Date.now() - cached.timestamp) < PRICE_CACHE_TTL_MS) {
+        pumpApiTokens.push(addr); // Has fresh PumpAPI cache
+      } else {
+        jupiterTokens.push(addr); // Needs Jupiter fetch (graduated/old)
       }
     }
+    
+    console.log(`  → ${pumpApiTokens.length} PumpAPI (cached), ${jupiterTokens.length} Jupiter (batch fetch)`);
+    
+    // Process PumpAPI tokens (use cache, fast)
+    for (const addr of pumpApiTokens) {
+      await processOneToken(addr);
+    }
+    
+    // Process Jupiter tokens with batch fetch optimization
+    if (jupiterTokens.length > 0) {
+      const batchPrices = await getJupiterBatchPrices(jupiterTokens);
+      
+      // Populate PumpAPI cache with Jupiter results so processOneToken works
+      for (const addr of jupiterTokens) {
+        const snapshot = batchPrices[addr];
+        if (snapshot && snapshot.price) {
+          // Temporarily add to cache so getTokenSnapshot() can use it
+          pumpApiPriceCache.set(addr, {
+            price: snapshot.price,
+            timestamp: Date.now(),
+            pairCreatedAt: Date.now(),
+            symbol: '?',
+            name: '?',
+            pair: null // Jupiter = no pair data
+          });
+        }
+      }
+      
+      // Now process normally (will use cache we just populated)
+      for (const addr of jupiterTokens) {
+        await processOneToken(addr);
+      }
+    }
+    
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    const rate = ((armed.length / elapsed) * 60).toFixed(0);
-    console.log(`✅ Fast check complete: ${armed.length} tokens in ${elapsed}s (~${rate} req/min)`);
+    console.log(`✅ Fast check complete: ${armed.length} tokens in ${elapsed}s (${pumpApiTokens.length} cached + ${jupiterTokens.length} batch)`);
     saveState(state);
   } finally {
     isFastChecking = false;
