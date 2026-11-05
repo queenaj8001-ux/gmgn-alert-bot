@@ -646,7 +646,7 @@ async function refreshGeckoWatchlist() {
 // ==================== V47.6: PUMPAPI PRICE CACHE ====================
 // Real-time price cache updated by PumpAPI WebSocket stream
 const pumpApiPriceCache = new Map(); // mint → { price, timestamp, liquidity, volume, ... }
-const PRICE_CACHE_TTL_MS = 5 * 60 * 1000; // 5min stale = fallback to DexScreener
+const PRICE_CACHE_TTL_MS = 2 * 60 * 60 * 1000; // V49.3: 2 hours (matches MAX_AGE_ARMED, was 5min)
 let pumpApiLastEventTime = 0;
 let pumpApiEventCount = 0;
 
@@ -670,37 +670,41 @@ async function getTokenSnapshot(address) {
     };
   }
   
-  // V47.6: Fallback to DexScreener (cache miss or stale)
-  const url = `https://api.dexscreener.com/latest/dex/tokens/${address}`;
-  const res = await fetch(url);
-  if (!res.ok) return null;
-  const json = await res.json();
-  const pairs = (json?.pairs || []).filter((p) => p.chainId === 'solana');
-  if (pairs.length === 0) return null;
+  // V49.2: Fallback to Jupiter Price API V3 (price-only, for graduated/old tokens)
+  const jupUrl = `https://api.jup.ag/price/v3?ids=${address}`;
+  try {
+    const jupRes = await fetch(jupUrl);
+    if (jupRes.ok) {
+      const jupJson = await jupRes.json();
+      const priceData = jupJson[address];
+      if (priceData?.usdPrice && priceData.usdPrice > 0) {
+        // Price-only snapshot: no metadata, no quality gates
+        // Graduated/dead tokens get currentPrice updates but won't trigger signals
+        // (pair: null will fail checkQualityGates, which is correct behavior)
+        return {
+          address,
+          symbol: '?',
+          name: '?',
+          price: priceData.usdPrice,
+          pair: null // No pair data = no signal capability (intended)
+        };
+      }
+    }
+  } catch (err) {
+    // Jupiter API failed, token has no price data
+  }
 
-  pairs.sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
-  const p = pairs[0];
-
-  const dexId = (p.dexId || '').toLowerCase();
-  if (EXCLUDE_DEX_IDS.length > 0 && EXCLUDE_DEX_IDS.some((ex) => dexId.includes(ex))) return null;
-
-  if (!p.pairCreatedAt) return null;
-  const ageMinutes = (Date.now() - p.pairCreatedAt) / 60000;
-  if (ageMinutes < MIN_TOKEN_AGE_MINUTES || ageMinutes > MAX_TOKEN_AGE_MINUTES) return null;
-
-  const priceNum = parseFloat(p.priceUsd);
-  if (!p.priceUsd || Number.isNaN(priceNum)) return null;
-
-  const symbol = p.baseToken?.symbol || '?';
-  const name = p.baseToken?.name || '?';
-  if (isBrandImpersonation(symbol, name)) return null;
-
-  return { address, symbol, name, price: priceNum, pair: p };
+  return null; // No price data available from any source
 }
 
 // ==================== TAHAP 2: filter kualitas (gate FLUKTUATIF — dicek cuma saat sinyal) ====================
 async function checkQualityGates(snapshot) {
   const { address, symbol, name, pair: p } = snapshot;
+
+  // V49.2: Guard for Jupiter fallback (pair: null = price-only, no signal capability)
+  if (!p) {
+    return { pass: false, reason: 'no pair data (price-only snapshot)' };
+  }
 
   const liquidityUsd = p.liquidity?.usd ?? null;
   if (liquidityUsd == null || liquidityUsd < MIN_LIQUIDITY_FOR_SIGNAL_USD) {
@@ -805,6 +809,12 @@ async function processOneTokenInner(addr) {
   state.prices[addr] = entry; // tulis balik SEGERA — supaya referensi konsisten dipakai
                                // fungsi lain (mis. checkQualityGates) di siklus yang sama,
                                // menghindari data bundle/rugcheck "tidak terlihat" sesaat
+  
+  // V49.2: Update currentPrice from snapshot (Jupiter fallback or PumpAPI cache)
+  entry.currentPrice = snapshot.price;
+  entry.lastPriceFetch = Date.now();
+  entry.source = snapshot.pair ? 'pumpapi' : 'jupiter';
+  
   if (snapshot.price > entry.maxPrice) entry.maxPrice = snapshot.price;
 
   // Penanda PERMANEN (tidak pernah direset oleh sinyal manapun) — apakah token ini
