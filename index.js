@@ -1626,6 +1626,8 @@ function setupHeliusEnhancedWebSocket() {
 // ==================== PUMPPORTAL WEBSOCKET (REAL-TIME DISCOVERY) ====================
 function setupPumpPortalWebSocket() {
   const ws = new WebSocket('wss://pumpportal.fun/api/data');
+  let lastMessageTime = Date.now();
+  let heartbeatInterval;
   
   ws.on('open', () => {
     console.log('✅ PumpPortal WebSocket connected');
@@ -1636,9 +1638,21 @@ function setupPumpPortalWebSocket() {
     }));
     
     console.log('📡 Subscribed to real-time token launches (PumpPortal)');
+    
+    // V49.4: Heartbeat monitor (detect silent disconnect)
+    heartbeatInterval = setInterval(() => {
+      const silentFor = Math.floor((Date.now() - lastMessageTime) / 1000);
+      if (silentFor > 120) { // 2 minutes no messages = dead
+        console.log(`⚠️ PumpPortal silent for ${silentFor}s, forcing reconnect...`);
+        clearInterval(heartbeatInterval);
+        ws.terminate();
+      }
+    }, 30000); // Check every 30s
   });
   
   ws.on('message', (data) => {
+    lastMessageTime = Date.now(); // V49.4: Update heartbeat
+    
     try {
       const msg = JSON.parse(data);
       
@@ -1735,7 +1749,13 @@ function setupPumpPortalWebSocket() {
   
   ws.on('close', () => {
     console.log('🔌 PumpPortal WebSocket closed, reconnecting in 5 seconds...');
+    if (heartbeatInterval) clearInterval(heartbeatInterval); // V49.4: Cleanup
     setTimeout(setupPumpPortalWebSocket, 5000);
+  });
+  
+  ws.on('error', (err) => {
+    console.error('❌ PumpPortal error:', err.message);
+    if (heartbeatInterval) clearInterval(heartbeatInterval); // V49.4: Cleanup
   });
   
   return ws;
